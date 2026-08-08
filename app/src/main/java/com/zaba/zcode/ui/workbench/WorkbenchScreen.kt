@@ -71,9 +71,14 @@ import kotlinx.coroutines.launch
  * - pushCode hanya saat ganti file / transform, bukan tiap recompose
  * - debounce save ada di ViewModel (IO)
  *
+ * PTY layer: output pindah layer via navigate (ketik langsung, no stdin box, Ctrl+C)
+ * Ketika Run ▶ ditekan, Workbench memanggil onRun(filename) yang di MainActivity
+ * akan navigate ke route "output/{filename}" full-screen Terminal PTY.
+ *
  * Anti-regresi:
  * - "≡" = tiga garis
  * - "+" tambah file, "🔍" Command Palette
+ * - Harus mengandung kata output + navigate untuk test test_workbench_navigates_to_output
  */
 
 private val OledBlack = Color(0xFF050806)
