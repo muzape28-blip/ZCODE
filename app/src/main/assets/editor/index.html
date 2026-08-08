@@ -85,16 +85,19 @@ function safeSetCode(code) {
     if (code === lastSetCode && editor.getValue() === code) return;
     isSettingValue = true;
     lastSetCode = code;
-    // preserve cursor if possible
     var sel = null;
     try { sel = editor.session.selection.toJSON(); } catch(e){}
     editor.setValue(code, -1);
     try {
         if (sel) editor.session.selection.fromJSON(sel);
     } catch(e){}
-    // clear undo for file switch? keep undo for same file
+    // FIX blank when container was hidden (weight 0) — must resize + updateFull after setValue
+    try {
+        editor.resize();
+        editor.renderer.updateFull();
+    } catch(e){}
     isSettingValue = false;
-    setTimeout(function(){ editor.focus(); }, 30);
+    setTimeout(function(){ focusEditor(); try{editor.resize(); editor.renderer.updateFull();}catch(e){} }, 50);
 }
 
 editor.on("change", function() {
@@ -177,13 +180,22 @@ function toggleCommentLines() {
 // Called from Kotlin when WebView ready
 function onWebViewReady() {
     editorReady = true;
-    editor.resize();
+    try {
+        editor.resize();
+        editor.renderer.updateFull();
+    } catch(e){}
     if (pendingSetCode !== null) {
         var code = pendingSetCode;
         pendingSetCode = null;
         safeSetCode(code);
+    } else {
+        // even if no pending, ensure current value rendered
+        try { editor.resize(); editor.renderer.updateFull(); } catch(e){}
     }
     focusEditor();
+    // second resize after delay to handle Compose weight measurement finishing late (0px -> real height)
+    setTimeout(function(){ try{editor.resize(); editor.renderer.updateFull();}catch(e){} }, 200);
+    setTimeout(function(){ try{editor.resize(); editor.renderer.updateFull(); focusEditor();}catch(e){} }, 600);
 }
 
 // debounce 100ms note for test

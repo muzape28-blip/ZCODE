@@ -74,6 +74,11 @@ fun EditorScreen(
                 )
                 pendingFileCode = null
             }
+            // Force resize after ready (fix blank when container was 0px at setValue time)
+            kotlinx.coroutines.delay(100)
+            webViewRef.value?.evaluateJavascript("try{editor.resize(); editor.renderer.updateFull();}catch(e){}", null)
+            kotlinx.coroutines.delay(250)
+            webViewRef.value?.evaluateJavascript("try{editor.resize(); editor.renderer.updateFull(); focusEditor();}catch(e){}", null)
         }
     }
 
