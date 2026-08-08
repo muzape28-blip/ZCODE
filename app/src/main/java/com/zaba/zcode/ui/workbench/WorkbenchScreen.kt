@@ -350,16 +350,10 @@ fun WorkbenchScreen(
                     }
                 }
 
-                // Tap area editor = fokus WebView + show keyboard
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clickable {
-                            webViewRef.value?.requestFocus()
-                            webViewRef.value?.requestFocusFromTouch()
-                            webViewRef.value?.evaluateJavascript("focusEditor();", null)
-                        }
-                ) {
+                // Editor area — jangan pakai clickable wrapper yang intercept touch (pelajaran ZABACODE)
+                // Biarkan WebView handle touch sendiri via setOnTouchListener + ZcodeWebView.onCheckIsTextEditor
+                // Kalau pakai Box clickable di atas AndroidView, WebView tidak dapat ACTION_DOWN → keyboard tidak muncul
+                Box(modifier = Modifier.weight(1f)) {
                     EditorScreen(
                         code = vm.activeCode,
                         fileName = vm.activeFile,

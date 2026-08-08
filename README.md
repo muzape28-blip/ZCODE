@@ -69,6 +69,13 @@ Menggabungkan **kesederhanaan Pydroid**, **detail arsitektur VS Code**, dan **op
 - [ ] **Encrypted Keystore UI + Privacy Toggle** (persist draf teks polos off).
 - [ ] **Alpine proot terminal** (apk add, git) — Zmux pending, tidak dibundle.
 - [ ] **LSP Python (jedi) → autocomplete ala VS Code**.
+- [ ] **CodeMirror 6 Migration (Target Fase 3+)** — Evaluasi migrasi dari Ace 1.44.0 ke CodeMirror 6 untuk mobile-optimal:
+  - Alasan: Replit blog & perbandingan editor — *If you want a code editor that supports mobile, you should use CodeMirror 6. Ace has not-bad support but not production-ready, Monaco unusable on mobile.* [Replit](https://blog.replit.com/code-editors)
+  - CodeMirror 6 pakai native `contentEditable` → keyboard Android natural tanpa hack `onCheckIsTextEditor` / hidden textarea.
+  - Modular 50-200KB vs Ace 1.5MB vs Monaco 5MB+, retention +70% di Replit mobile setelah Ace→CM6.
+  - ZABACODE pernah migrasi Monaco→Ace setelah puluhan perbaikan; ZCODE akan hindari pengulangan dengan menyiapkan branch eksperimen CM6, tetap keep Ace sebagai default stabil sampai CM6 matang (offline-first, Python mode, 12px OLED).
+  - Referensi: [Ace vs CodeMirror vs Monaco](https://www.xheldon.com/en/tech/a-comparison-of-code-editor), [Replit Betting on CodeMirror](https://blog.replit.com/codemirror)
+
 
 ---
 

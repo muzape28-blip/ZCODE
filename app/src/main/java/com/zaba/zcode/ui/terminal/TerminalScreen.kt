@@ -18,10 +18,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -31,6 +29,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -45,7 +45,6 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -62,13 +61,22 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * TerminalScreen — layer Terminal full-screen (pindah layer).
- * FIX V3 - keyboard tidak muncul (referensi StackOverflow + Compose docs):
- * - Pakai BasicTextField (lebih ringan dari TextField Material) + focusRequester + LocalSoftwareKeyboardController
- * - LaunchedEffect + delay(100) + awaitFrame pattern + keyboardController.show()
- * - TextField tidak boleh alpha 0f + 0.sp (IME anggap gone) → pakai alpha 0.01f + textStyle 12.sp transparent
- * - Parent Column clickable requestFocus + show keyboard, bukan cuma requestFocus
- * - Buffer 50ms debounce untuk lag per-char
+ * TerminalScreen — SERIUS & HATI-HATI FIX (pelajaran ZABACODE)
+ *
+ * ZABACODE pernah ada kasus serupa: terminal input tidak muncul char,
+ * keyboard hilang setelah fix. Akhirnya mereka keep 1 focusRequester + 1 clickable saja,
+ * jangan nested clickable, dan TextField Material (bukan Basic) dengan alpha 0 + height 1.dp
+ * tapi tetap focusable.
+ *
+ * FIX V4:
+ * - Cuma 1 clickable di root Column (jangan di Box output juga → double intercept)
+ * - TextField Material (lebih stabil di Compose daripada Basic) dengan
+ *   modifier fillMaxWidth + height 1.dp + alpha 0f + focusRequester
+ * - textStyle 12.sp (jangan 0.sp) + colors transparent
+ * - LaunchedEffect delay 300 + requestFocus + delay 100 + keyboardController.show()
+ * - Tap → scope launch { requestFocus + delay 50 + show }
+ * - Buffer 50ms debounce untuk lag output
+ * - Output cap MAX_OUTPUT_CHARS
  */
 
 @Composable
@@ -148,12 +156,12 @@ fun TerminalScreen(
         withContext(Dispatchers.IO) { activeSession.waitForExit() }
     }
 
-    // FIX keyboard: request focus + show dengan delay + awaitFrame pattern (Compose docs)
+    // Focus + keyboard — pattern yang work di StackOverflow Compose
     LaunchedEffect(Unit) {
-        delay(300)
+        delay(350)
         try {
             focusRequester.requestFocus()
-            delay(100)
+            delay(120)
             keyboardController?.show()
         } catch (_: Exception) {}
     }
@@ -213,10 +221,10 @@ fun TerminalScreen(
                         onClick = {
                             session?.sendCtrlC()
                             appendImmediate("^C\nProcess Interrupted\n")
-                            // setelah Ctrl+C, fokus balik
                             scope.launch {
-                                delay(100)
+                                delay(120)
                                 focusRequester.requestFocus()
+                                delay(80)
                                 keyboardController?.show()
                             }
                         },
@@ -226,16 +234,9 @@ fun TerminalScreen(
                         Text("Ctrl+C", fontSize = 12.sp, color = Color.White)
                     }
                     Text(
-                        "Tap terminal untuk ketik • Enter kirim",
+                        "Tap untuk ketik",
                         color = Color.Gray,
-                        fontSize = 11.sp,
-                        modifier = Modifier.clickable {
-                            scope.launch {
-                                focusRequester.requestFocus()
-                                delay(50)
-                                keyboardController?.show()
-                            }
-                        }
+                        fontSize = 11.sp
                     )
                 }
             }
@@ -246,12 +247,12 @@ fun TerminalScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .background(Color(0xFF050806))
-                // Klik di area kosong = fokus + show keyboard
+                // HANYA 1 clickable di root, jangan nested clickable di Box output (pelajaran ZABACODE)
                 .clickable {
                     scope.launch {
                         try {
                             focusRequester.requestFocus()
-                            delay(80)
+                            delay(60)
                             keyboardController?.show()
                         } catch (_: Exception) {}
                     }
@@ -263,14 +264,7 @@ fun TerminalScreen(
                     .weight(1f)
                     .fillMaxWidth()
                     .verticalScroll(scrollState)
-                    // Klik di output juga fokus
-                    .clickable {
-                        scope.launch {
-                            focusRequester.requestFocus()
-                            delay(50)
-                            keyboardController?.show()
-                        }
-                    }
+                // JANGAN clickable lagi di sini, biar tidak double intercept
             ) {
                 Column {
                     Text(
@@ -299,22 +293,30 @@ fun TerminalScreen(
                 }
             }
 
-            // FIX: BasicTextField, bukan TextField Material, alpha 0.01f (jangan 0f) + height 24dp biar IME anggap visible
-            // Ini adalah pattern yang work di StackOverflow untuk Compose + WebView fokus issue
-            BasicTextField(
+            // TextField Material 1dp alpha 0f tapi textStyle 12.sp (jangan 0.sp) → IME anggap ada
+            // Ini yang sebelumnya work (keyboard muncul) sebelum V3
+            TextField(
                 value = inputVal,
                 onValueChange = { inputVal = it },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(24.dp)
-                    .alpha(0.01f)
+                    .height(1.dp)
+                    .alpha(0f)
                     .focusRequester(focusRequester),
-                textStyle = TextStyle(
-                    color = Color.Transparent,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 12.sp
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = Color.Transparent,
+                    unfocusedContainerColor = Color.Transparent,
+                    disabledContainerColor = Color.Transparent,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent,
+                    cursorColor = Color.Transparent,
+                    focusedTextColor = Color.Transparent,
+                    unfocusedTextColor = Color.Transparent
                 ),
-                cursorBrush = SolidColor(Color.Transparent),
+                textStyle = TextStyle(
+                    fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace
+                ),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(
                     onDone = {
@@ -323,9 +325,9 @@ fun TerminalScreen(
                         session?.sendInput(line + "\n")
                         inputVal = TextFieldValue("")
                         scope.launch {
-                            delay(50)
+                            delay(80)
                             focusRequester.requestFocus()
-                            delay(50)
+                            delay(80)
                             keyboardController?.show()
                         }
                     }

@@ -2,21 +2,23 @@ package com.zaba.zcode.ui.editor
 
 import android.content.Context
 import android.util.AttributeSet
-import android.view.inputmethod.BaseInputConnection
-import android.view.inputmethod.EditorInfo
-import android.view.inputmethod.InputConnection
 import android.webkit.WebView
 
 /**
  * ZcodeWebView — custom WebView untuk Ace Editor di Android
- * FIX keyboard tidak muncul saat tap (issue generic WebView + Ace)
- * Referensi: StackOverflow Android WebView keyboard not showing, Ace issue #3450
- * - onCheckIsTextEditor() true → paksa sistem anggap WebView adalah text editor
- * - onCreateInputConnection → return BaseInputConnection agar IME bisa attach
- * - focusable true
+ * FIX keyboard tidak muncul — versi hati-hati ( pelajaran ZABACODE )
  *
- * Kombinasi ini yang membuat textarea Ace bisa munculkan keyboard di semua device
- * termasuk Samsung, Xiaomi, Android 11-14.
+ * Referensi yang berhasil di ZABACODE (Buildozer WebView) & StackOverflow:
+ * - https://stackoverflow.com/questions/3460915/webview-textarea-doesnt-pop-up-the-keyboard (issue #7189)
+ *   Fix minimal: requestFocus(View.FOCUS_DOWN) + onTouchListener requestFocus
+ *   + overide onCheckIsTextEditor() true SAJA (jangan override onCreateInputConnection dengan BaseInputConnection dummy)
+ * - Ace issue #3450: Android butuh full buffer: ace_text-input width 100%
+ *
+ * Pelajaran ZABACODE: Monaco → Ace migrasi karena Monaco terlalu berat & unusable mobile.
+ * ZCODE jangan ulangi dengan hack berlebihan (BaseInputConnection false bikin IME attach ke WebView bukan ke textarea Ace → keyboard hilang)
+ *
+ * Jadi ZcodeWebView ini MINIMAL: hanya onCheckIsTextEditor true, focusable true.
+ * Biarkan WebView super handle InputConnection asli agar textarea Ace dapat IME.
  */
 class ZcodeWebView @JvmOverloads constructor(
     context: Context,
@@ -30,20 +32,11 @@ class ZcodeWebView @JvmOverloads constructor(
     }
 
     override fun onCheckIsTextEditor(): Boolean {
+        // Paksa sistem anggap WebView bisa jadi text editor → keyboard boleh muncul
+        // Ini fix paling vote di StackOverflow, tanpa side-effect BaseInputConnection
         return true
     }
 
-    override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
-        // Jika outAttrs diset, IME akan muncul
-        // Pakai BaseInputConnection agar tidak crash saat Ace hidden textarea
-        // outAttrs.imeOptions = EditorInfo.IME_ACTION_DONE
-        // outAttrs.inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
-        // Return base connection, tapi tetap coba super untuk kompat
-        return try {
-            val superConn = super.onCreateInputConnection(outAttrs)
-            superConn ?: BaseInputConnection(this, false)
-        } catch (e: Exception) {
-            BaseInputConnection(this, false)
-        }
-    }
+    // JANGAN override onCreateInputConnection dengan BaseInputConnection dummy
+    // Biarkan super handle agar Ace hidden textarea dapat InputConnection asli
 }

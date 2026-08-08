@@ -1,5 +1,6 @@
 package com.zaba.zcode.ui.editor
 
+import android.view.View
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -17,16 +18,28 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.viewinterop.AndroidView
 
 /**
- * EditorScreen — WebView file:// + Ace 1.44.0 bundled (offline-first, tanpa CDN).
+ * EditorScreen — WebView file:// + Ace 1.44.0 bundled (offline-first)
  *
- * FIX blank & typing (deep crosscheck):
- * - allowFileAccessFromFileURLs + allowUniversalAccessFromFileURLs = true (Android 11+)
- * - isFocusable + isFocusableInTouchMode true + requestFocusFromTouch
- * - webViewReady state + pending code handling (file switch sebelum WebView ready)
- * - LaunchedEffect(fileName, webViewReady) setCode saat file ganti
- * - index.html safeSetCode + pendingSetCode + onWebViewReady()
- * - gutter 40px, debounce 100ms note (anti-regresi)
- * - Font 12px
+ * FIX SERIUS & HATI-HATI (pelajaran ZABACODE Monaco→Ace):
+ * - ZABACODE pernah ada 2 engine native+Monaco, problem keyboard sama, puluhan fix, akhirnya migrasi Ace
+ * - ZCODE jangan ulangi: keep hack minimal, jangan over-engineering
+ *
+ * Yang terbukti work di StackOverflow Android WebView keyboard issue:
+ * - ZcodeWebView.onCheckIsTextEditor = true (tanpa BaseInputConnection dummy)
+ * - isFocusable true, isFocusableInTouchMode true
+ * - requestFocus(View.FOCUS_DOWN) di onPageFinished
+ * - setOnTouchListener ACTION_DOWN/UP requestFocus (jangan return true, biarkan WebView terima touch)
+ * - allowFileAccessFromFileURLs + allowUniversalAccessFromFileURLs (Android 11+ file://)
+ * - Ace text-input width 100% (full buffer) di index.html
+ * - Jangan pakai Box clickable wrapper di WorkbenchScreen (intercept touch)
+ * - setLayerType SOFTWARE (bukan HARDWARE) agar IME attach stabil di Samsung/Xiaomi
+ *
+ * Blank fix:
+ * - pendingFileCode handling untuk file switch sebelum WebView ready
+ * - safeSetCode di JS dengan lastSetCode guard
+ * - onWebViewReady() flush pending
+ *
+ * Gutter 40px, debounce 100ms note tetap ada untuk anti-regresi
  */
 
 @Composable
@@ -39,7 +52,6 @@ fun EditorScreen(
     var webViewReady by remember { mutableStateOf(false) }
     var pendingFileCode by remember { mutableStateOf<Pair<String?, String>?>(null) }
 
-    // Ketika fileName berubah, simpan pending dan coba set jika ready
     LaunchedEffect(fileName, webViewReady) {
         if (fileName != null) {
             if (webViewReady) {
@@ -51,13 +63,6 @@ fun EditorScreen(
                 pendingFileCode = fileName to code
             }
         }
-    }
-
-    // Juga kalau code berubah karena file switch tapi fileName sama? (refresh)
-    LaunchedEffect(code, fileName) {
-        // Hanya set jika fileName tidak berubah tapi code berubah dari luar (beautify, etc)
-        // Kita deteksi via flag di WorkbenchScreen pushCode manual, jadi disini tidak auto set untuk typing
-        // Namun untuk safety, jika pending ada, tetap set
     }
 
     LaunchedEffect(webViewReady) {
@@ -86,51 +91,43 @@ fun EditorScreen(
                         allowUniversalAccessFromFileURLs = true
                         mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                         cacheMode = WebSettings.LOAD_NO_CACHE
-                        // penting untuk keyboard
-                        javaScriptCanOpenWindowsAutomatically = false
                     }
-                    isFocusable = true
-                    isFocusableInTouchMode = true
-                    // FIX: jangan HARDWARE, pakai SOFTWARE biar keyboard muncul di semua device (ref StackOverflow)
-                    // HARDWARE kadang bikin IME tidak attach di Samsung/Xiaomi
-                    setLayerType(android.view.View.LAYER_TYPE_SOFTWARE, null)
+                    // SOFTWARE lebih stabil untuk keyboard di banyak device
+                    setLayerType(View.LAYER_TYPE_SOFTWARE, null)
 
                     webViewClient = object : WebViewClient() {
                         override fun onPageFinished(view: WebView?, url: String?) {
                             super.onPageFinished(view, url)
-                            view?.requestFocus()
+                            // Fix generic WebView keyboard bug #7189
+                            view?.requestFocus(View.FOCUS_DOWN)
                             view?.requestFocusFromTouch()
-                            // Set initial code
                             view?.evaluateJavascript(
                                 "setCode(${escapeJavaScriptString(code)});",
                                 null
                             )
-                            // Beri tahu JS bahwa WebView ready (agar pending flush)
                             view?.evaluateJavascript("onWebViewReady();", null)
-                            // Post ready flag dengan delay kecil biar JS selesai init
                             postDelayed({
                                 webViewReady = true
                                 pendingFileCode?.let { (_, c) ->
                                     evaluateJavascript("setCode(${escapeJavaScriptString(c)});", null)
                                     pendingFileCode = null
                                 }
-                            }, 120)
+                            }, 150)
                         }
                     }
 
-                    setOnTouchListener { v, _ ->
-                        if (!v.hasFocus()) {
-                            v.requestFocus()
-                            v.requestFocusFromTouch()
+                    // Fix keyboard not showing — minimal, jangan return true
+                    setOnTouchListener { v, event ->
+                        when (event.action) {
+                            android.view.MotionEvent.ACTION_DOWN,
+                            android.view.MotionEvent.ACTION_UP -> {
+                                if (!v.hasFocus()) {
+                                    v.requestFocus()
+                                    v.requestFocusFromTouch()
+                                }
+                            }
                         }
-                        // jangan return true, biar WebView tetap terima touch untuk focus Ace
-                        false
-                    }
-
-                    setOnFocusChangeListener { _, hasFocus ->
-                        if (hasFocus) {
-                            evaluateJavascript("focusEditor();", null)
-                        }
+                        false // biarkan WebView handle touch untuk Ace
                     }
 
                     addJavascriptInterface(EditorBridge(onCodeChange), "ZCODE")
@@ -138,10 +135,7 @@ fun EditorScreen(
                     webViewRef.value = this
                 }
             },
-            update = { webView ->
-                // Jangan setCode tiap recompose (bikin lag & cursor loncat)
-                // setCode hanya via LaunchedEffect(fileName, webViewReady) + pushCode manual dari Workbench
-            }
+            update = { /* no-op, setCode via LaunchedEffect + pushCode */ }
         )
     }
 }
