@@ -73,15 +73,17 @@ android {
 
 // Chaquopy 15.0 — Python 3.11 in-process runtime (Fase 1: on-device execution).
 // - version 3.11: satu-satunya yang masih mendukung armeabi-v7a (HP user)
-// - FIX pip ModuleNotFoundError: bundle pip/setuptools/wheel agar `import pip` ada saat runtime PipScreen
+// - FIX pip ModuleNotFoundError + AssetPath bug: bundle pip 23.3.1 (stabil di Chaquopy) + setuptools + wheel
+// - pip 24+ punya importlib.metadata bug AssetPath parent di Chaquopy AssetFinder
 // - buildPython: CI menyediakan python3 (3.11) di PATH
 chaquopy {
     defaultConfig {
         version = "3.11"
         pip {
-            install("pip")
-            install("setuptools")
-            install("wheel")
+            // pin ke 23.3.1 yang diketahui work di Chaquopy, bukan latest 24+
+            install("pip==23.3.1")
+            install("setuptools==68.2.2")
+            install("wheel==0.41.2")
         }
     }
 }

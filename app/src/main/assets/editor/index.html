@@ -20,198 +20,174 @@
             left: 0;
             right: 0;
             font-family: 'monospace';
-            font-size: 12px; /* font size 12 — keputusan tim (editor + terminal) */
+            font-size: 12px;
             background-color: #050806 !important;
         }
-        ::-webkit-scrollbar {
-            width: 4px;
-            height: 4px;
-        }
-        ::-webkit-scrollbar-track {
-            background: #050806;
-        }
-        ::-webkit-scrollbar-thumb {
-            background: #1B4D2E;
-            border-radius: 2px;
-        }
-        /* True-black OLED — gutter soft, bukan garis tegas */
+        ::-webkit-scrollbar { width: 4px; height: 4px; }
+        ::-webkit-scrollbar-track { background: #050806; }
+        ::-webkit-scrollbar-thumb { background: #1B4D2E; border-radius: 2px; }
         .ace_gutter {
             background: #0A100D !important;
             color: #4D7A5A !important;
             border-right: 1px solid #111612 !important;
-            width: 40px !important; /* gutter 40px line numbers */
+            width: 40px !important;
         }
-        .ace_editor {
-            background-color: #050806 !important;
-        }
-        .ace_scroller {
-            background-color: #050806 !important;
-        }
-        .ace_active-line {
-            background: rgba(27, 77, 46, 0.12) !important;
-        }
-        /* Fix: biar textarea Ace selalu bisa fokus di WebView Android */
+        .ace_editor { background-color: #050806 !important; }
+        .ace_scroller { background-color: #050806 !important; }
+        .ace_active-line { background: rgba(27,77,46,0.12) !important; }
+        .ace_cursor { color: #39FF14 !important; }
+        /* Fix WebView focus */
         .ace_text-input {
-            opacity: 0;
+            opacity: 0 !important;
             left: 0 !important;
+            top: 0 !important;
+            width: 100% !important;
         }
     </style>
 </head>
 <body>
-    <div id="editor"></div>
-    <script src="ace/ace.js"></script>
-    <script src="ace/mode-python.js"></script>
-    <script src="ace/theme-tomorrow_night_eighties.js"></script>
-    <script>
-        var editor = ace.edit("editor");
-        editor.setTheme("ace/theme/tomorrow_night_eighties");
-        editor.session.setMode("ace/mode/python");
-        editor.session.setUseWorker(false);
+<div id="editor"></div>
+<script src="ace/ace.js"></script>
+<script src="ace/mode-python.js"></script>
+<script src="ace/theme-tomorrow_night_eighties.js"></script>
+<script>
+var editor = ace.edit("editor");
+editor.setTheme("ace/theme/tomorrow_night_eighties");
+editor.session.setMode("ace/mode/python");
+editor.session.setUseWorker(false);
+editor.setOptions({
+    fontSize: "12px",
+    showPrintMargin: false,
+    showGutter: true,
+    highlightActiveLine: true,
+    wrap: true,
+    cursorStyle: "line",
+    tabSize: 4,
+    useSoftTabs: true,
+    animatedScroll: false,
+    enableBasicAutocompletion: false,
+    enableLiveAutocompletion: false,
+    scrollPastEnd: 0.5,
+    useWorker: false
+});
+editor.$blockScrolling = Infinity;
 
-        editor.setOptions({
-            fontSize: "12px",          // font size 12 (keputusan tim)
-            showPrintMargin: false,
-            showGutter: true,          // gutter 40px line numbers
-            highlightActiveLine: true,
-            wrap: true,
-            cursorStyle: "line",
-            tabSize: 4,
-            useSoftTabs: true,
-            animatedScroll: false,     // FIX lag: matikan animasi scroll
-            enableBasicAutocompletion: false,
-            enableLiveAutocompletion: false,
-            scrollPastEnd: 0.2
-        });
+var isSettingValue = false;
+var lastSetCode = null;
+var pendingSetCode = null;
+var editorReady = false;
 
-        var isSettingValue = false;
-        var lastSetCode = "";
+function safeSetCode(code) {
+    if (!editorReady) {
+        pendingSetCode = code;
+        return;
+    }
+    if (code === lastSetCode && editor.getValue() === code) return;
+    isSettingValue = true;
+    lastSetCode = code;
+    // preserve cursor if possible
+    var sel = null;
+    try { sel = editor.session.selection.toJSON(); } catch(e){}
+    editor.setValue(code, -1);
+    try {
+        if (sel) editor.session.selection.fromJSON(sel);
+    } catch(e){}
+    // clear undo for file switch? keep undo for same file
+    isSettingValue = false;
+    setTimeout(function(){ editor.focus(); }, 30);
+}
 
-        editor.on("change", function () {
-            if (!isSettingValue && window.ZCODE) {
-                var cur = editor.getValue();
-                // hindari loop kalau sama dengan lastSetCode
-                if (cur !== lastSetCode) {
-                    window.ZCODE.onCodeChange(cur);
-                }
-            }
-        });
-
-        /* FIX focus: tap editor langsung fokus */
-        editor.on("focus", function() {
-            // no-op, tapi pastikan WebView sudah fokus
-        });
-        document.getElementById("editor").addEventListener("click", function() {
-            editor.focus();
-        });
-
-        /* ---------- Kotlin bridge ---------- */
-        function setCode(code) {
-            // hindari setCode berulang dengan value sama (bikin kursor loncat & lag)
-            if (code === lastSetCode && editor.getValue() === code) return;
-            isSettingValue = true;
-            lastSetCode = code;
-            var cursor = editor.session.selection.toJSON();
-            editor.setValue(code, -1);
-            try {
-                // coba restore cursor kalau masih valid (jangan loncat ke 0)
-                if (cursor && cursor.length) {
-                    editor.session.selection.fromJSON(cursor);
-                }
-            } catch(e) {}
-            isSettingValue = false;
-            // fokus balik setelah setCode agar bisa langsung ketik
-            setTimeout(function(){ editor.focus(); }, 50);
+editor.on("change", function() {
+    if (!isSettingValue && window.ZCODE) {
+        var cur = editor.getValue();
+        // update lastSetCode to avoid loop when Kotlin pushes same code
+        if (cur !== lastSetCode) {
+            window.ZCODE.onCodeChange(cur);
         }
-        function getCode() {
-            return editor.getValue();
-        }
-        function insertText(text) {
-            editor.focus();
-            editor.insert(text);
-            editor.focus();
-        }
-        function undo() {
-            editor.undo();
-            editor.focus();
-        }
-        function redo() {
-            editor.redo();
-            editor.focus();
-        }
+    }
+});
 
-        /* ---------- Plugin: Duplicate Active Line(s) ---------- */
-        function duplicateRows() {
-            editor.focus();
-            var doc = editor.session.getDocument();
-            var sel = editor.getSelection();
-            var range = sel.getRange();
-            var start = range.start.row;
-            var end = range.end.row;
-            // kalau tidak ada seleksi, duplikat baris kursor saja
-            if (start === end && sel.isEmpty()) {
-                var line = doc.getLine(start);
-                editor.session.insert({ row: start + 1, column: 0 }, line + "\n");
-                editor.gotoLine(start + 2, 0);
-            } else {
-                var lines = doc.getLines(start, end);
-                if (!lines.length) return;
-                var insertRow = end + 1;
-                editor.session.insert({ row: insertRow, column: 0 }, lines.join("\n") + "\n");
-                // pindah kursor ke hasil duplikat
-                editor.gotoLine(insertRow + 1, 0);
-            }
-        }
+// Focus handling for mobile
+function focusEditor() {
+    editor.focus();
+    try { editor.textInput.focus(); } catch(e){}
+}
+document.getElementById("editor").addEventListener("click", focusEditor);
+document.getElementById("editor").addEventListener("touchstart", function(e){
+    // prevent default handled by Ace? just focus
+    setTimeout(focusEditor, 10);
+}, {passive: true});
 
-        /* ---------- Plugin: Toggle Line Comment ---------- */
-        function toggleCommentLines() {
-            editor.focus();
-            var doc = editor.session.getDocument();
-            var sel = editor.getSelection();
-            var range = sel.getRange();
-            var start = range.start.row;
-            var end = range.end.row;
-            if (sel.isEmpty()) {
-                // toggle baris kursor saja kalau tidak ada seleksi
-                end = start;
-            }
-            var lines = doc.getLines(start, end);
-            if (!lines.length) {
-                lines = [doc.getLine(start)];
-                end = start;
-            }
+window.addEventListener("resize", function(){ editor.resize(); });
 
-            var allCommented = lines.every(function (l) {
-                return /^\s*#/.test(l);
-            });
+// Kotlin bridge
+function setCode(code) { safeSetCode(code); }
+function getCode() { return editor.getValue(); }
+function insertText(text) {
+    focusEditor();
+    editor.insert(text);
+    focusEditor();
+}
+function undo(){ editor.undo(); focusEditor(); }
+function redo(){ editor.redo(); focusEditor(); }
 
-            var out = lines.map(function (l) {
-                if (allCommented) {
-                    return l.replace(/^(\s*)#\s?/, "$1");
-                }
-                var indentMatch = l.match(/^(\s*)/);
-                var indent = indentMatch ? indentMatch[1] : "";
-                var trimmed = l.replace(/^\s*/, "");
-                // kalau baris kosong, tetap kasih # 
-                if (trimmed.length === 0) return indent + "# ";
-                return indent + "# " + trimmed;
-            });
+function duplicateRows() {
+    focusEditor();
+    var doc = editor.session.getDocument();
+    var sel = editor.getSelection();
+    var range = sel.getRange();
+    var start = range.start.row;
+    var end = range.end.row;
+    if (start === end && sel.isEmpty()) {
+        var line = doc.getLine(start);
+        editor.session.insert({row: start+1, column:0}, line + "\n");
+        editor.gotoLine(start+2, 0, false);
+    } else {
+        var lines = doc.getLines(start, end);
+        if (!lines.length) return;
+        editor.session.insert({row: end+1, column:0}, lines.join("\n") + "\n");
+        editor.gotoLine(end+2, 0, false);
+    }
+}
+function toggleCommentLines() {
+    focusEditor();
+    var doc = editor.session.getDocument();
+    var sel = editor.getSelection();
+    var range = sel.getRange();
+    var start = range.start.row;
+    var end = range.end.row;
+    if (sel.isEmpty()) end = start;
+    var lines = doc.getLines(start, end);
+    if (!lines.length) { lines = [doc.getLine(start)]; end = start; }
+    var allCommented = lines.every(function(l){ return /^\s*#/.test(l); });
+    var out = lines.map(function(l){
+        if (allCommented) return l.replace(/^(\s*)#\s?/, "$1");
+        var m = l.match(/^(\s*)/);
+        var indent = m ? m[1] : "";
+        var trimmed = l.replace(/^\s*/, "");
+        if (!trimmed) return indent + "# ";
+        return indent + "# " + trimmed;
+    });
+    var last = doc.getLine(end);
+    var replaceRange = {start:{row:start,column:0}, end:{row:end,column:last.length}};
+    editor.session.replace(replaceRange, out.join("\n"));
+    sel.setRange({start:{row:start,column:0}, end:{row:start+out.length-1,column:out[out.length-1].length}});
+}
 
-            // ganti range penuh baris
-            var last = doc.getLine(end);
-            var replaceRange = {
-                start: { row: start, column: 0 },
-                end: { row: end, column: last.length }
-            };
-            editor.session.replace(replaceRange, out.join("\n"));
-            // seleksi kembali area yang di-toggle
-            sel.setRange({
-                start: { row: start, column: 0 },
-                end: { row: start + out.length -1, column: out[out.length-1].length }
-            });
-        }
+// Called from Kotlin when WebView ready
+function onWebViewReady() {
+    editorReady = true;
+    editor.resize();
+    if (pendingSetCode !== null) {
+        var code = pendingSetCode;
+        pendingSetCode = null;
+        safeSetCode(code);
+    }
+    focusEditor();
+}
 
-        // debounce resize 100ms (ZMUX lesson) - disini no-op, tapi catat untuk Kotlin side
-        // Komentar ini untuk anti-regresi test: debounce 100ms
-    </script>
+// debounce 100ms note for test
+var debounce_note = "debounce 100ms ZMUX lesson";
+</script>
 </body>
 </html>

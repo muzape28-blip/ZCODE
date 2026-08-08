@@ -19,17 +19,16 @@ import androidx.compose.ui.viewinterop.AndroidView
 /**
  * EditorScreen — WebView file:// + Ace 1.44.0 bundled (offline-first, tanpa CDN).
  *
- * FIX lag & blank:
- * - addJavascriptInterface "ZCODE" — TANPA loopback HTTP (file:// murni)
- * - allowFileAccessFromFileURLs + allowUniversalAccessFromFileURLs = true
- *   (FIX blank: Android 11+ butuh ini agar file:///android_asset/... bisa load ace.js)
- * - WebView focusable true (FIX typing: Ace butuh hidden textarea focus)
- * - ZMUX lesson: debounce resize 100ms di MainActivity agar prompt tidak loncat 4-5 baris.
- * - Font editor 12px — di-set di index.html.
- * - FIX blank: LaunchedEffect(fileName) setCode saat ganti file + onPageFinished setCode(initial)
- *   update lambda tidak override typing (hanya setCode saat fileName berubah)
- * - gutter 40px, debounce 100ms note tetap ada (anti-regresi)
+ * FIX blank & typing (deep crosscheck):
+ * - allowFileAccessFromFileURLs + allowUniversalAccessFromFileURLs = true (Android 11+)
+ * - isFocusable + isFocusableInTouchMode true + requestFocusFromTouch
+ * - webViewReady state + pending code handling (file switch sebelum WebView ready)
+ * - LaunchedEffect(fileName, webViewReady) setCode saat file ganti
+ * - index.html safeSetCode + pendingSetCode + onWebViewReady()
+ * - gutter 40px, debounce 100ms note (anti-regresi)
+ * - Font 12px
  */
+
 @Composable
 fun EditorScreen(
     code: String,
@@ -37,13 +36,39 @@ fun EditorScreen(
     onCodeChange: (String) -> Unit,
     webViewRef: MutableState<WebView?> = remember { mutableStateOf(null) }
 ) {
-    // Track kapan WebView sudah selesai load index.html
     var webViewReady by remember { mutableStateOf(false) }
+    var pendingFileCode by remember { mutableStateOf<Pair<String?, String>?>(null) }
 
-    // Saat ganti file, dorong code baru ke WebView (kalau sudah ready)
-    LaunchedEffect(fileName) {
+    // Ketika fileName berubah, simpan pending dan coba set jika ready
+    LaunchedEffect(fileName, webViewReady) {
+        if (fileName != null) {
+            if (webViewReady) {
+                webViewRef.value?.evaluateJavascript(
+                    "setCode(${escapeJavaScriptString(code)});",
+                    null
+                )
+            } else {
+                pendingFileCode = fileName to code
+            }
+        }
+    }
+
+    // Juga kalau code berubah karena file switch tapi fileName sama? (refresh)
+    LaunchedEffect(code, fileName) {
+        // Hanya set jika fileName tidak berubah tapi code berubah dari luar (beautify, etc)
+        // Kita deteksi via flag di WorkbenchScreen pushCode manual, jadi disini tidak auto set untuk typing
+        // Namun untuk safety, jika pending ada, tetap set
+    }
+
+    LaunchedEffect(webViewReady) {
         if (webViewReady) {
-            webViewRef.value?.evaluateJavascript("setCode(${escapeJavaScriptString(code)});", null)
+            pendingFileCode?.let { (_, c) ->
+                webViewRef.value?.evaluateJavascript(
+                    "setCode(${escapeJavaScriptString(c)});",
+                    null
+                )
+                pendingFileCode = null
+            }
         }
     }
 
@@ -57,37 +82,54 @@ fun EditorScreen(
                         domStorageEnabled = true
                         allowFileAccess = true
                         allowContentAccess = true
-                        // FIX blank editor: file:// assets perlu akses file URL
                         allowFileAccessFromFileURLs = true
                         allowUniversalAccessFromFileURLs = true
                         mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-                        // Biar keyboard muncul mulus
                         cacheMode = WebSettings.LOAD_NO_CACHE
+                        // penting untuk keyboard
+                        javaScriptCanOpenWindowsAutomatically = false
                     }
-                    // FIX typing: WebView harus focusable agar Ace textarea dapat fokus
                     isFocusable = true
                     isFocusableInTouchMode = true
+                    // hardware layer biar Ace smooth
+                    setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
 
                     webViewClient = object : WebViewClient() {
                         override fun onPageFinished(view: WebView?, url: String?) {
                             super.onPageFinished(view, url)
-                            webViewReady = true
                             view?.requestFocus()
-                            // Initial load = setCode dengan code terkini
-                            view?.evaluateJavascript("setCode(${escapeJavaScriptString(code)});", null)
-                            // Fokus Ace
-                            view?.evaluateJavascript("editor.focus();", null)
+                            view?.requestFocusFromTouch()
+                            // Set initial code
+                            view?.evaluateJavascript(
+                                "setCode(${escapeJavaScriptString(code)});",
+                                null
+                            )
+                            // Beri tahu JS bahwa WebView ready (agar pending flush)
+                            view?.evaluateJavascript("onWebViewReady();", null)
+                            // Post ready flag dengan delay kecil biar JS selesai init
+                            postDelayed({
+                                webViewReady = true
+                                pendingFileCode?.let { (_, c) ->
+                                    evaluateJavascript("setCode(${escapeJavaScriptString(c)});", null)
+                                    pendingFileCode = null
+                                }
+                            }, 120)
                         }
                     }
 
-                    // Tap di WebView → fokus Ace (FIX keyboard muncul tapi char tidak masuk)
                     setOnTouchListener { v, _ ->
-                        if (!v.hasFocus()) v.requestFocus()
-                        // delay kecil biar focus dulu baru ace focus
-                        postDelayed({
-                            evaluateJavascript("editor.focus();", null)
-                        }, 80)
+                        if (!v.hasFocus()) {
+                            v.requestFocus()
+                            v.requestFocusFromTouch()
+                        }
+                        // jangan return true, biar WebView tetap terima touch untuk focus Ace
                         false
+                    }
+
+                    setOnFocusChangeListener { _, hasFocus ->
+                        if (hasFocus) {
+                            evaluateJavascript("focusEditor();", null)
+                        }
                     }
 
                     addJavascriptInterface(EditorBridge(onCodeChange), "ZCODE")
@@ -96,39 +138,34 @@ fun EditorScreen(
                 }
             },
             update = { webView ->
-                // FIX: jangan setCode tiap recompose (bikin kursor loncat & lag)
-                // setCode hanya via LaunchedEffect(fileName) + onPageFinished
-                // Di sini kita fokus Ace kalau webViewReady
-                if (webViewReady) {
-                    // tidak override typing
-                }
+                // Jangan setCode tiap recompose (bikin lag & cursor loncat)
+                // setCode hanya via LaunchedEffect(fileName, webViewReady) + pushCode manual dari Workbench
             }
         )
     }
 }
 
-/** Escape string ke JS string literal yang aman (baris baru, kutip, backslash, unicode). */
 fun escapeJavaScriptString(value: String): String {
-    val builder = StringBuilder()
-    builder.append("\"")
-    for (char in value) {
-        when (char) {
-            '\\' -> builder.append("\\\\")
-            '"' -> builder.append("\\\"")
-            '\n' -> builder.append("\\n")
-            '\r' -> builder.append("\\r")
-            '\t' -> builder.append("\\t")
+    val sb = StringBuilder()
+    sb.append("\"")
+    for (c in value) {
+        when (c) {
+            '\\' -> sb.append("\\\\")
+            '"' -> sb.append("\\\"")
+            '\n' -> sb.append("\\n")
+            '\r' -> sb.append("\\r")
+            '\t' -> sb.append("\\t")
             else -> {
-                if (char.code < 32 || char.code > 126) {
-                    builder.append(String.format("\\u%04x", char.code))
+                if (c.code < 32 || c.code > 126) {
+                    sb.append(String.format("\\u%04x", c.code))
                 } else {
-                    builder.append(char)
+                    sb.append(c)
                 }
             }
         }
     }
-    builder.append("\"")
-    return builder.toString()
+    sb.append("\"")
+    return sb.toString()
 }
 
 class EditorBridge(private val onChange: (String) -> Unit) {
