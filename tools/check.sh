@@ -30,7 +30,7 @@ grep -q "MAX_CODE_BYTES = 512" app/src/main/java/com/zaba/zcode/core/execution/E
 grep -q "MAX_INTERACTIVE_QUEUE = 10000" app/src/main/java/com/zaba/zcode/core/execution/ExecutionEngine.kt && echo "✅ MAX_INTERACTIVE_QUEUE" || (echo "❌ queue missing" && exit 1)
 
 echo "[6/6] Run Python strict tests (Fase 0)"
-python3 -m pytest test_zcode_fase0.py -v
+pytest test_zcode_fase0.py -v
 python3 test_zcode_fase0.py 2>&1 | tail -n 20
 
 echo ""

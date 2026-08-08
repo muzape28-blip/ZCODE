@@ -13,9 +13,12 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import com.zaba.zcode.ui.editor.EditorScreen
 import com.zaba.zcode.ui.theme.ZcodeTheme
 import com.zaba.zcode.ui.workbench.WorkbenchScreen
+import com.zaba.zcode.ui.terminal.TerminalScreen
+import com.zaba.zcode.ui.settings.PipScreen
+import com.zaba.zcode.ui.settings.AboutScreen
+import com.zaba.zcode.core.files.Paths
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
@@ -29,34 +32,40 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Fase 0: Topbar faded grey ≡ + + — see WorkbenchScreen
-        // Window soft input adjustResize is in Manifest
+        val vm = WorkspaceViewModel(applicationContext)
 
         setContent {
-            ZcodeTheme {
+            ZcodeTheme(themeType = vm.themeType) {
                 val nav = rememberNavController()
-                // Accompanist insets? Use WindowInsets.ime
                 NavHost(navController = nav, startDestination = "editor") {
                     composable("editor") {
                         WorkbenchScreen(
-                            onRun = { code ->
-                                // Fase 0: navigate to PTY output layer (pindah layer, not panel)
-                                nav.navigate("output")
+                            vm = vm,
+                            onRun = { filename ->
+                                nav.navigate("output/$filename")
                             },
-                            onOpenSettings = { nav.navigate("settings") }
+                            onNavigateToPip = { nav.navigate("pip") },
+                            onNavigateToAbout = { nav.navigate("about") }
                         )
                     }
-                    composable("output") {
-                        // Fase 1 PTY will be here — for Fase 0 just placeholder with back
-                        Box(Modifier.fillMaxSize()) {
-                            Text("Output PTY — Fase 1: PTY terminal (ketik langsung, no stdin field)")
-                        }
+                    composable("output/{filename}") { backStackEntry ->
+                        val filename = backStackEntry.arguments?.getString("filename") ?: "main.py"
+                        val filesDir = Paths.filesDir(applicationContext)
+                        TerminalScreen(
+                            filename = filename,
+                            filesDir = filesDir,
+                            onBack = { nav.navigateUp() }
+                        )
                     }
-                    composable("settings") {
-                        // Fase 0: Settings layer text-only (Theme, Plugin/Addon, Pip -> pip layer)
-                        Box(Modifier.fillMaxSize()) {
-                            Text("Settings — Theme / Plugin/Addon / Pip — Fase 0 skeleton")
-                        }
+                    composable("pip") {
+                        PipScreen(
+                            onBack = { nav.navigateUp() }
+                        )
+                    }
+                    composable("about") {
+                        AboutScreen(
+                            onBack = { nav.navigateUp() }
+                        )
                     }
                 }
             }
