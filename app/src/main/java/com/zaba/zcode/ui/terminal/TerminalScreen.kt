@@ -46,6 +46,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
@@ -54,20 +55,23 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zaba.zcode.core.execution.ExecutionEngine
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * TerminalScreen — layer Terminal full-screen (pindah layer, bukan panel).
- * - Ketik langsung di terminal: TextField transparan 1dp mengikat keyboard Android,
- *   Enter mengirim baris ke stdin (tanpa tombol Send) — dual backend:
- *   Chaquopy in-process (Android) / python3 subprocess (desktop).
- * - Ctrl+C: deterministik untuk input() yang nge-blok (flag interrupt), best-effort
- *   interrupt thread worker untuk loop CPU.
- * - Back di pojok kiri atas; proses dibersihkan saat keluar.
- * - Output di-cap MAX_OUTPUT_CHARS (S-18).
+ * TerminalScreen — layer Terminal full-screen (pindah layer).
+ * FIX lag & typing:
+ * - Output buffer + debounce 60ms (jangan recompose per char)
+ * - Cap output MAX_OUTPUT_CHARS + truncate head
+ * - TextField 1dp tetap tapi focusable + alpha 0 + keyboard controller
+ * - Tap terminal → focus + show keyboard
+ * - Enter → kirim stdin tanpa tombol Send
+ * - Ctrl+C → SIGINT / KeyboardInterrupt deterministik
  */
+
 @Composable
 fun TerminalScreen(
     filename: String,
@@ -80,34 +84,72 @@ fun TerminalScreen(
     var session by remember { mutableStateOf<ExecutionEngine.InteractiveSession?>(null) }
     val scrollState = rememberScrollState()
     val focusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
     val scope = rememberCoroutineScope()
 
-    fun append(text: String) {
-        val combined = terminalText + text
+    // Buffer untuk batch output (FIX lag per-char)
+    val outputBuffer = remember { StringBuilder() }
+    var flushJob by remember { mutableStateOf<Job?>(null) }
+
+    fun flushBuffer() {
+        if (outputBuffer.isEmpty()) return
+        val chunk = outputBuffer.toString()
+        outputBuffer.clear()
+        val combined = terminalText + chunk
         terminalText = if (combined.length > ExecutionEngine.MAX_OUTPUT_CHARS) {
             "\n…[output truncated: >${ExecutionEngine.MAX_OUTPUT_CHARS} chars]…\n" +
                 combined.takeLast(ExecutionEngine.MAX_OUTPUT_CHARS)
-        } else {
-            combined
-        }
+        } else combined
+
         scope.launch {
-            scrollState.scrollTo(scrollState.maxValue)
+            // scroll dengan delay kecil biar layout selesai
+            delay(20)
+            scrollState.animateScrollTo(scrollState.maxValue)
         }
     }
 
-    // Jalankan proses saat terminal dibuka (callback datang dari thread background)
+    fun appendBuffered(text: String) {
+        outputBuffer.append(text)
+        // debounce flush 50ms → kumpulkan 256-1024 char baru render sekali
+        if (flushJob?.isActive != true) {
+            flushJob = scope.launch {
+                delay(50)
+                flushBuffer()
+            }
+        }
+    }
+
+    fun appendImmediate(text: String) {
+        // untuk user input echo / ctrl+c
+        outputBuffer.append(text)
+        flushBuffer()
+    }
+
     LaunchedEffect(filename) {
         val targetFile = File(filesDir, filename)
         if (!targetFile.exists()) {
-            append("\nError: File $filename not found!\n")
+            appendImmediate("\nError: File $filename not found!\n")
             return@LaunchedEffect
         }
-        append("\n[backend: ${ExecutionEngine.describeBackend()}]\n")
+        appendImmediate("\n[backend: ${ExecutionEngine.describeBackend()}]\n")
         val activeSession = ExecutionEngine.startInteractiveSession(
             context = context,
             file = targetFile,
-            onOutput = { chunk -> scope.launch { append(chunk) } },
-            onExit = { code -> scope.launch { append("\n\nProcess finished with exit code $code\n") } }
+            onOutput = { chunk -> appendBuffered(chunk) },
+            onExit = { code ->
+                scope.launch {
+                    // flush dulu sisa buffer
+                    delay(60)
+                    flushBuffer()
+                    withContext(Dispatchers.Main) {
+                        val msg = "\n\nProcess finished with exit code $code\n"
+                        val combined = terminalText + msg
+                        terminalText = if (combined.length > ExecutionEngine.MAX_OUTPUT_CHARS)
+                            combined.takeLast(ExecutionEngine.MAX_OUTPUT_CHARS) else combined
+                        scrollState.animateScrollTo(scrollState.maxValue)
+                    }
+                }
+            }
         )
         session = activeSession
         withContext(Dispatchers.IO) {
@@ -115,20 +157,20 @@ fun TerminalScreen(
         }
     }
 
-    // Fokus otomatis + bersihkan proses saat keluar
     LaunchedEffect(Unit) {
+        delay(200)
         focusRequester.requestFocus()
+        keyboardController?.show()
     }
+
     DisposableEffect(Unit) {
-        onDispose {
-            session?.sendKill()
-        }
+        onDispose { session?.sendKill() }
     }
 
     val blinkTransition = rememberInfiniteTransition(label = "cursor")
     val blinkAlpha by blinkTransition.animateFloat(
         initialValue = 1f,
-        targetValue = 0.1f,
+        targetValue = 0.15f,
         animationSpec = infiniteRepeatable(tween(520), RepeatMode.Reverse),
         label = "cursorAlpha"
     )
@@ -143,7 +185,6 @@ fun TerminalScreen(
                         .padding(horizontal = 12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Back di pojok kiri atas (keputusan tim)
                     Text(
                         "◀ Back",
                         color = MaterialTheme.colorScheme.onSurface,
@@ -176,7 +217,7 @@ fun TerminalScreen(
                     Button(
                         onClick = {
                             session?.sendCtrlC()
-                            append("^C\nProcess Interrupted\n")
+                            appendImmediate("^C\nProcess Interrupted\n")
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB3261E)),
                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp)
@@ -184,7 +225,7 @@ fun TerminalScreen(
                         Text("Ctrl+C", fontSize = 12.sp, color = Color.White)
                     }
                     Text(
-                        "Tap terminal untuk mengetik langsung",
+                        "Tap terminal untuk mengetik • Enter kirim",
                         color = Color.Gray,
                         fontSize = 11.sp
                     )
@@ -196,8 +237,11 @@ fun TerminalScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .background(Color(0xFF050806)) // terminal SELALU true-black (keputusan tim)
-                .clickable { focusRequester.requestFocus() }
+                .background(Color(0xFF050806))
+                .clickable {
+                    focusRequester.requestFocus()
+                    keyboardController?.show()
+                }
                 .padding(12.dp)
         ) {
             Box(
@@ -209,12 +253,11 @@ fun TerminalScreen(
                 Column {
                     Text(
                         text = terminalText,
-                        color = Color(0xFF39FF14), // phosphor green
+                        color = Color(0xFF39FF14),
                         fontFamily = FontFamily.Monospace,
-                        fontSize = 12.sp, // font size 12 (keputusan tim)
+                        fontSize = 12.sp,
                         lineHeight = 16.sp
                     )
-                    // Baris input aktif + kursor blok berkedip
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             text = inputVal.text,
@@ -234,12 +277,14 @@ fun TerminalScreen(
                 }
             }
 
-            // TextField transparan 1dp: pengikat keyboard virtual (ketik langsung di terminal)
+            // FIX typing: TextField tetap 1dp tapi focusable, alpha 0, bukan size 0 yang kadang tidak focus di Android 13+
             TextField(
                 value = inputVal,
                 onValueChange = { inputVal = it },
                 modifier = Modifier
-                    .size(1.dp)
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .alpha(0f)
                     .focusRequester(focusRequester),
                 colors = TextFieldDefaults.colors(
                     focusedContainerColor = Color.Transparent,
@@ -249,15 +294,18 @@ fun TerminalScreen(
                     unfocusedIndicatorColor = Color.Transparent,
                     cursorColor = Color.Transparent
                 ),
-                textStyle = TextStyle(fontSize = 12.sp),
+                textStyle = TextStyle(fontSize = 0.sp),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(
                     onDone = {
                         val line = inputVal.text
-                        append(line + "\n")
+                        appendImmediate(line + "\n")
                         session?.sendInput(line + "\n")
                         inputVal = TextFieldValue("")
-                        focusRequester.requestFocus()
+                        scope.launch {
+                            delay(10)
+                            focusRequester.requestFocus()
+                        }
                     }
                 )
             )

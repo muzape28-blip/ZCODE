@@ -41,15 +41,18 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zaba.zcode.core.execution.ExecutionEngine
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
  * PipScreen — Settings → Pip: instal package Python via pip.
- * - Log streaming real-time (user bisa lihat traceback & progres unduhan).
- * - Guard nama package (anti shell injection), cap log MAX_OUTPUT_CHARS.
- * - Kotak log SELALU true-black phosphor, font 12.
- * - Backend: pip in-process Chaquopy (Android) / python3 -m pip (desktop).
+ * FIX:
+ * - pip ModuleNotFoundError di Chaquopy: sekarang pip dibundle via build.gradle pip { install "pip" }
+ * - log buffering 50ms (jangan recompose per line)
+ * - cap log MAX_OUTPUT_CHARS
  */
+
 @Composable
 fun PipScreen(
     context: android.content.Context,
@@ -61,38 +64,71 @@ fun PipScreen(
     val scrollState = rememberScrollState()
     val scope = rememberCoroutineScope()
 
-    fun appendLog(text: String) {
-        val combined = logText + text
-        logText = if (combined.length > ExecutionEngine.MAX_OUTPUT_CHARS) {
-            combined.takeLast(ExecutionEngine.MAX_OUTPUT_CHARS)
-        } else {
-            combined
+    // buffer untuk batch log (FIX lag per line)
+    val logBuffer = remember { StringBuilder() }
+    var flushJob by remember { mutableStateOf<Job?>(null) }
+
+    fun flushLog() {
+        if (logBuffer.isEmpty()) return
+        val chunk = logBuffer.toString()
+        logBuffer.clear()
+        val combined = logText + chunk
+        logText = if (combined.length > ExecutionEngine.MAX_OUTPUT_CHARS)
+            combined.takeLast(ExecutionEngine.MAX_OUTPUT_CHARS) else combined
+        scope.launch {
+            delay(30)
+            scrollState.animateScrollTo(scrollState.maxValue)
         }
-        scope.launch { scrollState.scrollTo(scrollState.maxValue) }
+    }
+
+    fun appendLogBuffered(text: String) {
+        logBuffer.append(text)
+        if (flushJob?.isActive != true) {
+            flushJob = scope.launch {
+                delay(60)
+                flushLog()
+            }
+        }
+    }
+
+    fun appendLogImmediate(text: String) {
+        logBuffer.append(text)
+        flushLog()
     }
 
     fun install(pkg: String) {
         val trimmed = pkg.trim()
         if (trimmed.isBlank() || isInstalling) return
+        if (!ExecutionEngine.isSafePackageName(trimmed)) {
+            appendLogImmediate("\n❌ Package name tidak valid: '$trimmed'\n")
+            return
+        }
         isInstalling = true
-        appendLog("\n> pip install $trimmed\n")
+        appendLogImmediate("\n> pip install $trimmed\n")
+
         val ok = ExecutionEngine.startPipStream(
             context = context,
             packageName = trimmed,
-            onLog = { line -> scope.launch { appendLog(line) } },
+            onLog = { line -> appendLogBuffered(line) },
             onDone = { success, exitCode ->
                 scope.launch {
+                    // flush sisa
+                    delay(80)
+                    flushLog()
                     if (success) {
-                        appendLog("\n✅ Package '$trimmed' installed successfully!\n")
+                        appendLogImmediate("\n✅ Package '$trimmed' installed successfully!\n")
                     } else {
-                        appendLog("\n❌ Installation failed (exit code $exitCode).\n")
+                        appendLogImmediate("\n❌ Installation failed (exit code $exitCode).\n")
+                        if (exitCode != 0) {
+                            appendLogImmediate("Tip: Coba nama lain atau cek koneksi.\n")
+                        }
                     }
                     isInstalling = false
                 }
             }
         )
         if (!ok) {
-            appendLog("\n❌ Package name tidak valid: '$trimmed'\n")
+            appendLogImmediate("\n❌ Gagal memulai pip. Cek nama package & coba lagi.\n")
             isInstalling = false
         }
     }
@@ -177,7 +213,6 @@ fun PipScreen(
             )
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Kotak log — SELALU true-black OLED (keputusan tim)
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -188,9 +223,9 @@ fun PipScreen(
             ) {
                 Text(
                     text = logText,
-                    color = Color(0xFF39FF14), // phosphor green
+                    color = Color(0xFF39FF14),
                     fontFamily = FontFamily.Monospace,
-                    fontSize = 12.sp, // font size 12 (keputusan tim)
+                    fontSize = 12.sp,
                     lineHeight = 16.sp
                 )
             }
@@ -201,4 +236,5 @@ fun PipScreen(
 private fun initialLog(): String =
     "ZCODE Pip Installer Layer — Chaquopy 3.11\n" +
         "-".repeat(45) + "\n" +
-        "Ketik nama package di atas, lalu tap Install.\n"
+        "Ketik nama package (requests, numpy, dll) lalu tap Install.\n" +
+        "Log streaming realtime, max ${com.zaba.zcode.core.execution.ExecutionEngine.MAX_OUTPUT_CHARS / 1024}KB.\n\n"

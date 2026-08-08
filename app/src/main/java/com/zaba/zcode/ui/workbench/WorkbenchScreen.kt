@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -41,6 +43,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -62,17 +65,15 @@ import kotlinx.coroutines.launch
 /**
  * WorkbenchScreen — workspace utama ZCODE (Fase 1 + Fase 2).
  *
- * Tata letak (dari atas ke bawah):
- *   Topbar (soft, theme-aware) → Tab bar (long-press = close) → banner syntax
- *   → Editor Ace OLED → QuickTools (chips bulat) → FAB ▶ di atas handle.
- *
- * Drawer: Navigasi (Pip/About), Code Transforms (5 plugin), Theme (3 tema),
- * Files Manager (rename/delete dengan dialog konfirmasi).
+ * FIX lag global:
+ * - filesManager pakai LazyColumn + cache filesInfoCache (jangan listFiles() di composition)
+ * - TabRow tetap combinedClickable tapi no-op Tab onClick agar tidak double-trigger
+ * - pushCode hanya saat ganti file / transform, bukan tiap recompose
+ * - debounce save ada di ViewModel (IO)
  *
  * Anti-regresi:
- * - "≡" = tiga garis (ikon menu teks — jangan ganti dengan kata lain)
- * - "+" tambah file, "🔍" Command Palette di topbar
- * - Semua tombol ter-wire ke WorkspaceViewModel / onRun / navigate ke layer output
+ * - "≡" = tiga garis
+ * - "+" tambah file, "🔍" Command Palette
  */
 
 private val OledBlack = Color(0xFF050806)
@@ -89,7 +90,6 @@ fun WorkbenchScreen(
     val scope = rememberCoroutineScope()
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
 
-    // state dialog
     var fileToRename by remember { mutableStateOf<String?>(null) }
     var renameNewName by remember { mutableStateOf("") }
     var fileToDelete by remember { mutableStateOf<String?>(null) }
@@ -97,7 +97,13 @@ fun WorkbenchScreen(
     var showPalette by remember { mutableStateOf(false) }
 
     fun pushCode() {
+        // proyeksi aman: webView mungkin belum ready
         webViewRef.value?.evaluateJavascript("setCode(${escapeJavaScriptString(vm.activeCode)});", null)
+    }
+
+    // Refresh file cache saat drawer dibuka (anti stale)
+    LaunchedEffect(drawerState.isOpen) {
+        if (drawerState.isOpen) vm.refreshFiles()
     }
 
     ModalNavigationDrawer(
@@ -107,7 +113,6 @@ fun WorkbenchScreen(
                 drawerContainerColor = MaterialTheme.colorScheme.background,
                 modifier = Modifier.width(300.dp)
             ) {
-                // Header drawer — soft, tanpa garis tegas
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -146,20 +151,34 @@ fun WorkbenchScreen(
                 DrawerItem("Beautifier Pro (Format Code)") {
                     scope.launch { drawerState.close() }
                     vm.beautifyActiveFile()
-                    pushCode()
+                    // delay kecil biar drawer close animation tidak jank bersamaan JS eval
+                    scope.launch {
+                        kotlinx.coroutines.delay(120)
+                        pushCode()
+                    }
                 }
                 DrawerItem("Optimize Auto-Imports") {
                     scope.launch { drawerState.close() }
                     vm.optimizeActiveImports()
-                    pushCode()
+                    scope.launch {
+                        kotlinx.coroutines.delay(120)
+                        pushCode()
+                    }
                 }
                 DrawerItem("Duplicate Active Line") {
                     scope.launch { drawerState.close() }
-                    webViewRef.value?.evaluateJavascript("duplicateRows();", null)
+                    // FIX: pastikan focus dulu baru duplicate
+                    scope.launch {
+                        kotlinx.coroutines.delay(100)
+                        webViewRef.value?.evaluateJavascript("editor.focus(); duplicateRows();", null)
+                    }
                 }
                 DrawerItem("Toggle Line Comment") {
                     scope.launch { drawerState.close() }
-                    webViewRef.value?.evaluateJavascript("toggleCommentLines();", null)
+                    scope.launch {
+                        kotlinx.coroutines.delay(100)
+                        webViewRef.value?.evaluateJavascript("editor.focus(); toggleCommentLines();", null)
+                    }
                 }
                 DrawerItem("Clear All Drafts & Files") {
                     scope.launch { drawerState.close() }
@@ -197,7 +216,8 @@ fun WorkbenchScreen(
                 Divider(color = Color.White.copy(alpha = 0.06f), modifier = Modifier.padding(vertical = 6.dp))
 
                 DrawerSectionTitle("FILES MANAGER")
-                val files = vm.getAllFiles()
+                // FIX lag: pakai cache, LazyColumn
+                val files = vm.filesInfoCache
                 if (files.isEmpty()) {
                     Text(
                         "Belum ada file .py — tap + di topbar",
@@ -206,13 +226,12 @@ fun WorkbenchScreen(
                         color = Color.Gray
                     )
                 } else {
-                    Column(
+                    LazyColumn(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
-                            .verticalScroll(rememberScrollState())
                     ) {
-                        files.forEach { fileMap ->
+                        items(files, key = { it["name"] as String }) { fileMap ->
                             val name = fileMap["name"] as String
                             val size = fileMap["size"] as? Long ?: 0L
                             val isActive = vm.activeFile == name
@@ -223,7 +242,11 @@ fun WorkbenchScreen(
                                 onClick = {
                                     vm.selectFile(name)
                                     scope.launch { drawerState.close() }
-                                    pushCode()
+                                    // pushCode via LaunchedEffect(fileName) di EditorScreen + manual untuk aman
+                                    scope.launch {
+                                        kotlinx.coroutines.delay(80)
+                                        pushCode()
+                                    }
                                 },
                                 onRename = {
                                     fileToRename = name
@@ -240,7 +263,6 @@ fun WorkbenchScreen(
         Scaffold(
             topBar = { WorkbenchTopBar(vm, webViewRef, onOpenDrawer = { scope.launch { drawerState.open() } }, onOpenPalette = { showPalette = true }) },
             floatingActionButton = {
-                // ▶ Run → onRun(filename) → MainActivity navigate ke layer output full-screen (pindah layer)
                 FloatingActionButton(
                     onClick = {
                         val active = vm.activeFile ?: "main.py"
@@ -261,9 +283,6 @@ fun WorkbenchScreen(
                     .padding(padding)
                     .background(OledBlack)
             ) {
-                // Tab bar — multi-file, long-press untuk close (tanpa tombol ×)
-                // Fix anti double-trigger: seleksi & close ditangani SATU combinedClickable di
-                // wrapper Box; Tab(onClick = {}) no-op sehingga tidak ada event ganda.
                 ScrollableTabRow(
                     selectedTabIndex = (vm.openedFiles.indexOf(vm.activeFile ?: "").coerceAtLeast(0)),
                     containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
@@ -284,18 +303,24 @@ fun WorkbenchScreen(
                                     .combinedClickable(
                                         onClick = {
                                             vm.selectFile(filename)
-                                            pushCode()
+                                            scope.launch {
+                                                kotlinx.coroutines.delay(60)
+                                                pushCode()
+                                            }
                                         },
                                         onLongClick = {
                                             vm.closeFile(filename)
-                                            pushCode()
+                                            scope.launch {
+                                                kotlinx.coroutines.delay(60)
+                                                pushCode()
+                                            }
                                         }
                                     )
                                     .padding(horizontal = 14.dp, vertical = 10.dp)
                             ) {
                                 Text(
                                     text = filename,
-                                    fontSize = 12.sp, // font size 12 (keputusan tim)
+                                    fontSize = 12.sp,
                                     fontFamily = FontFamily.Monospace
                                 )
                             }
@@ -303,7 +328,6 @@ fun WorkbenchScreen(
                     }
                 }
 
-                // Banner syntax warning — soft, membulat, tidak mengganggu
                 vm.syntaxError?.let { err ->
                     Surface(
                         color = Color(0x1AFF4B4B),
@@ -321,22 +345,20 @@ fun WorkbenchScreen(
                     }
                 }
 
-                // Editor (Ace WebView)
                 Box(modifier = Modifier.weight(1f)) {
                     EditorScreen(
                         code = vm.activeCode,
+                        fileName = vm.activeFile,
                         onCodeChange = { vm.updateCode(it) },
                         webViewRef = webViewRef
                     )
                 }
 
-                // QuickTools — chips bulat, scroll horizontal
                 QuickToolsBar(webViewRef)
             }
         }
     }
 
-    // ---------- Dialog: Rename ----------
     fileToRename?.let { oldName ->
         AlertDialog(
             onDismissRequest = { fileToRename = null },
@@ -362,7 +384,6 @@ fun WorkbenchScreen(
         )
     }
 
-    // ---------- Dialog: Delete ----------
     fileToDelete?.let { name ->
         AlertDialog(
             onDismissRequest = { fileToDelete = null },
@@ -381,7 +402,6 @@ fun WorkbenchScreen(
         )
     }
 
-    // ---------- Dialog: Clear All ----------
     if (confirmClearAll) {
         AlertDialog(
             onDismissRequest = { confirmClearAll = false },
@@ -391,7 +411,10 @@ fun WorkbenchScreen(
                 TextButton(onClick = {
                     confirmClearAll = false
                     vm.clearAllDrafts()
-                    pushCode()
+                    scope.launch {
+                        kotlinx.coroutines.delay(200)
+                        pushCode()
+                    }
                 }) { Text("Clear All", color = Color(0xFFFFB4AB)) }
             },
             dismissButton = {
@@ -400,11 +423,7 @@ fun WorkbenchScreen(
         )
     }
 
-    // ---------- Dialog: Command Palette & Quick Open ----------
     if (showPalette) {
-        // Tipe eksplisit: tanpa ini, lambda `webViewRef.value?.evaluateJavascript(...)`
-        // mengembalikan Unit? sehingga list ter-infer jadi Pair<String, () -> Unit?>
-        // dan tidak cocok dengan parameter `commands: List<Pair<String, () -> Unit>>`.
         val paletteCommands: List<Pair<String, () -> Unit>> = listOf(
             "Beautifier Pro (Format Code)" to {
                 vm.beautifyActiveFile()
@@ -415,10 +434,10 @@ fun WorkbenchScreen(
                 pushCode()
             },
             "Duplicate Active Line" to {
-                webViewRef.value?.evaluateJavascript("duplicateRows();", null)
+                webViewRef.value?.evaluateJavascript("editor.focus(); duplicateRows();", null)
             },
             "Toggle Line Comment" to {
-                webViewRef.value?.evaluateJavascript("toggleCommentLines();", null)
+                webViewRef.value?.evaluateJavascript("editor.focus(); toggleCommentLines();", null)
             },
             "Open Pip Manager" to { onNavigateToPip() },
             "Open About" to { onNavigateToAbout() }
@@ -430,7 +449,10 @@ fun WorkbenchScreen(
             onOpenFile = { name ->
                 showPalette = false
                 vm.selectFile(name)
-                pushCode()
+                scope.launch {
+                    kotlinx.coroutines.delay(80)
+                    pushCode()
+                }
             },
             onRunCommand = { action ->
                 showPalette = false
@@ -439,10 +461,6 @@ fun WorkbenchScreen(
         )
     }
 }
-
-// =====================================================================
-// Topbar — soft, theme-aware, pembatas tidak sharp
-// =====================================================================
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -461,7 +479,6 @@ private fun WorkbenchTopBar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            // ≡ tiga garis — buka drawer
             Text(
                 "≡",
                 style = MaterialTheme.typography.titleLarge,
@@ -486,7 +503,6 @@ private fun WorkbenchTopBar(
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // 🔍 Command Palette & Quick Open (akses jempol di topbar)
                 Text(
                     "🔍",
                     fontSize = 16.sp,
@@ -495,7 +511,6 @@ private fun WorkbenchTopBar(
                         .clickable(onClick = onOpenPalette)
                         .padding(10.dp)
                 )
-                // + tambah file (untitled_N.py)
                 Text(
                     "+",
                     style = MaterialTheme.typography.titleLarge,
@@ -503,7 +518,7 @@ private fun WorkbenchTopBar(
                     modifier = Modifier
                         .clickable {
                             vm.createNewFile()
-                            webViewRef.value?.evaluateJavascript("setCode(${escapeJavaScriptString(vm.activeCode)});", null)
+                            // pushCode akan di-handle LaunchedEffect fileName + delay
                         }
                         .padding(10.dp)
                 )
@@ -511,10 +526,6 @@ private fun WorkbenchTopBar(
         }
     }
 }
-
-// =====================================================================
-// QuickTools — chips bulat, scroll horizontal, semua ter-wire
-// =====================================================================
 
 @Composable
 private fun QuickToolsBar(webViewRef: androidx.compose.runtime.MutableState<WebView?>) {
@@ -534,7 +545,9 @@ private fun QuickToolsBar(webViewRef: androidx.compose.runtime.MutableState<WebV
                 val insertion = if (symbol == "Tab") "    " else symbol
                 AssistChip(
                     onClick = {
-                        webViewRef.value?.evaluateJavascript("insertText('$insertion');", null)
+                        // FIX escape: pakai escapeJavaScriptString agar ' " \n aman
+                        val esc = escapeJavaScriptString(insertion)
+                        webViewRef.value?.evaluateJavascript("insertText($esc);", null)
                     },
                     label = { Text(symbol, fontSize = 12.sp, fontFamily = FontFamily.Monospace) },
                     colors = AssistChipDefaults.assistChipColors(
@@ -547,10 +560,6 @@ private fun QuickToolsBar(webViewRef: androidx.compose.runtime.MutableState<WebV
         }
     }
 }
-
-// =====================================================================
-// Command Palette & Quick Open
-// =====================================================================
 
 @Composable
 private fun PaletteDialog(
@@ -625,10 +634,6 @@ private fun PaletteDialog(
         }
     )
 }
-
-// =====================================================================
-// Komponen kecil drawer
-// =====================================================================
 
 @Composable
 private fun DrawerSectionTitle(title: String) {

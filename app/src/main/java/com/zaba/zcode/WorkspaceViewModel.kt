@@ -1,61 +1,86 @@
 package com.zaba.zcode
 
-import android.app.Application
 import android.content.Context
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.zaba.zcode.core.editor.Checker
 import com.zaba.zcode.core.execution.ExecutionEngine
 import com.zaba.zcode.core.files.FileManager
 import com.zaba.zcode.core.files.Paths
 import com.zaba.zcode.core.plugins.PluginHost
 import com.zaba.zcode.ui.theme.ZcodeThemeType
-import kotlinx.coroutines.CoroutineScope
+import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import javax.inject.Inject
 
 /**
  * WorkspaceViewModel — pusat state workspace ZCODE (satu sumber kebenaran, DRY).
  * - CRUD file via FileManager (filesDir internal, anti traversal, 512KB guard)
- * - Persistensi: isi file tersimpan otomatis tiap perubahan + daftar tab & file aktif
- *   disimpan di SharedPreferences (pulih walau app di-swipe dari Recent Apps)
+ * - Persistensi: isi file tersimpan async di IO (FIX lag global: jangan save sync di Main)
+ * - Daftar file di-cache (FIX lag drawer: jangan listFiles() di composition tiap frame)
  * - Diagnostik sintaksis real-time (debounce 800ms, cancel job lama → tanpa race)
+ * - Guard anti double-trigger long-press close → re-open (400ms)
  */
-class WorkspaceViewModel(app: Application) : AndroidViewModel(app) {
+@HiltViewModel
+class WorkspaceViewModel @Inject constructor(
+    @ApplicationContext private val appContext: Context
+) : ViewModel() {
 
-    private val filesDir: File = Paths.filesDir(app)
-    private val prefs: android.content.SharedPreferences =
-        app.getSharedPreferences("zcode_workspace", Context.MODE_PRIVATE)
-    private val scope = CoroutineScope(Dispatchers.Main + Job())
+    private val filesDir: File = Paths.filesDir(appContext)
+    private val prefs = appContext.getSharedPreferences("zcode_workspace", Context.MODE_PRIVATE)
+
     private var validationJob: Job? = null
+    private var saveJob: Job? = null
 
     var themeType by mutableStateOf(ZcodeThemeType.RETRO)
+
     val openedFiles = mutableStateListOf<String>()
     var activeFile by mutableStateOf<String?>(null)
     var activeCode by mutableStateOf("")
     var syntaxError by mutableStateOf<String?>(null)
 
-    private val fileDrafts = mutableMapOf<String, String>()
+    // FIX lag drawer: cache list file, refresh hanya saat ada perubahan file
+    var filesInfoCache by mutableStateOf<List<Map<String, Any>>>(emptyList())
+        private set
 
+    private val fileDrafts = mutableMapOf<String, String>()
     private var lastClosed: Pair<String, Long>? = null
 
     init {
-        if (!filesDir.exists()) {
-            filesDir.mkdirs()
-        }
-        // backend eksekusi butuh cwd = folder workspace (plt.savefig / open() relatif)
+        if (!filesDir.exists()) filesDir.mkdirs()
         ExecutionEngine.workspaceDirPath = filesDir.absolutePath
         loadSavedWorkspace()
+        // sync pertama biar drawer tidak kosong flicker
+        filesInfoCache = FileManager.listFiles(filesDir)
+        refreshFiles()
+    }
+
+    // ------------------------------------------------------------------
+    // File list cache (anti disk I/O di composition)
+    // ------------------------------------------------------------------
+
+    fun refreshFiles() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val list = FileManager.listFiles(filesDir)
+            withContext(Dispatchers.Main) { filesInfoCache = list }
+        }
+    }
+
+    // Sync version untuk situasi yang butuh langsung (createNewFile butuh set existing)
+    private fun refreshFilesSync() {
+        filesInfoCache = FileManager.listFiles(filesDir)
     }
 
     // ------------------------------------------------------------------
@@ -68,20 +93,20 @@ class WorkspaceViewModel(app: Application) : AndroidViewModel(app) {
             json.put("opened", JSONArray(openedFiles))
             json.put("active", activeFile ?: "")
             prefs.edit().putString("workspace", json.toString()).apply()
-        } catch (e: Exception) {
-            // gagal persist bukan bencana — file sudah tersimpan di disk
+        } catch (_: Exception) {
         }
     }
 
     private fun loadSavedWorkspace() {
         val available = FileManager.listFiles(filesDir)
         if (available.isEmpty()) {
+            // save sync untuk bootstrap pertama (file kecil)
             FileManager.saveFile(filesDir, "main.py", "# Welcome to ZCODE\nprint(\"Hello, ZCODE!\")\n")
         }
 
         val saved = try {
             prefs.getString("workspace", null)?.let { JSONObject(it) }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         }
 
@@ -90,7 +115,6 @@ class WorkspaceViewModel(app: Application) : AndroidViewModel(app) {
         } ?: emptyList()
 
         if (savedTabs.isNotEmpty()) {
-            // hanya tab yang filenya masih ada di disk (file bisa dihapus di luar app)
             val validTabs = savedTabs.filter { File(filesDir, it).exists() }
             openedFiles.addAll(validTabs)
             activeFile = saved?.optString("active").takeIf { it in validTabs } ?: validTabs.firstOrNull()
@@ -102,6 +126,7 @@ class WorkspaceViewModel(app: Application) : AndroidViewModel(app) {
         }
 
         activeCode = activeFile?.let { FileManager.readFile(filesDir, it).getOrDefault("") } ?: ""
+        activeFile?.let { fileDrafts[it] = activeCode }
         validateSyntaxDebounced(activeCode)
         persistWorkspaceState()
     }
@@ -111,18 +136,18 @@ class WorkspaceViewModel(app: Application) : AndroidViewModel(app) {
     // ------------------------------------------------------------------
 
     fun selectFile(filename: String) {
-        // guard anti double-trigger: long-press close lalu onClick re-add file yang baru ditutup
         val now = System.currentTimeMillis()
         val lc = lastClosed
         if (lc != null && lc.first == filename && now - lc.second < 400) return
 
-        if (filename !in openedFiles) {
-            openedFiles.add(filename)
-        }
+        if (filename !in openedFiles) openedFiles.add(filename)
         activeFile = filename
-        activeCode = FileManager.readFile(filesDir, filename).getOrDefault("")
-        fileDrafts[filename] = activeCode
-        validateSyntaxDebounced(activeCode)
+        // read di IO? Untuk latency kecil, masih Main tapi file kecil 512KB. Jika mau super smooth, bisa IO.
+        // Kita tetap Main untuk select cepat, tapi file list sudah cache.
+        val code = fileDrafts[filename] ?: FileManager.readFile(filesDir, filename).getOrDefault("")
+        activeCode = code
+        fileDrafts[filename] = code
+        validateSyntaxDebounced(code)
         persistWorkspaceState()
     }
 
@@ -131,11 +156,23 @@ class WorkspaceViewModel(app: Application) : AndroidViewModel(app) {
         activeCode = newCode
         val current = activeFile ?: return
         fileDrafts[current] = newCode
-        FileManager.saveFile(filesDir, current, newCode)
+
+        // FIX lag global: save async di IO + debounce 350ms (mirip VS Code autoSave)
+        saveJob?.cancel()
+        saveJob = viewModelScope.launch {
+            delay(350)
+            withContext(Dispatchers.IO) {
+                FileManager.saveFile(filesDir, current, newCode)
+            }
+            // setelah save, refresh cache size (opsional, jarang)
+            refreshFiles()
+        }
+
         validateSyntaxDebounced(newCode)
     }
 
     fun createNewFile() {
+        // butuh list existing sync agar tidak duplicate name
         val existing = FileManager.listFiles(filesDir).map { it["name"] as String }.toSet()
         var index = 1
         var newName = "untitled_$index.py"
@@ -143,7 +180,9 @@ class WorkspaceViewModel(app: Application) : AndroidViewModel(app) {
             index++
             newName = "untitled_$index.py"
         }
+        // save sync kecil untuk new file agar langsung ada
         FileManager.saveFile(filesDir, newName, "# New python script\n")
+        refreshFilesSync()
         selectFile(newName)
     }
 
@@ -179,6 +218,7 @@ class WorkspaceViewModel(app: Application) : AndroidViewModel(app) {
                 if (activeFile == securedOld) activeFile = securedNew
                 val draft = fileDrafts.remove(securedOld)
                 if (draft != null) fileDrafts[securedNew] = draft
+                refreshFilesSync()
                 persistWorkspaceState()
                 return true
             }
@@ -189,14 +229,16 @@ class WorkspaceViewModel(app: Application) : AndroidViewModel(app) {
     fun deleteFile(filename: String): Boolean {
         val secured = FileManager.secureFilename(filename) ?: return false
         val file = File(filesDir, secured)
-        if (file.exists() && file.delete()) {
+        return if (file.exists() && file.delete()) {
+            // closeFile juga persist
             closeFile(secured)
-            return true
-        }
-        return false
+            refreshFilesSync()
+            true
+        } else false
     }
 
-    fun getAllFiles(): List<Map<String, Any>> = FileManager.listFiles(filesDir)
+    // Dipakai UI: cache, bukan scan disk tiap recompose
+    fun getAllFiles(): List<Map<String, Any>> = filesInfoCache
 
     // ------------------------------------------------------------------
     // Diagnostik sintaksis real-time (Fase 2)
@@ -204,44 +246,56 @@ class WorkspaceViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun validateSyntaxDebounced(code: String) {
         validationJob?.cancel()
-        validationJob = scope.launch {
+        validationJob = viewModelScope.launch {
             delay(800)
             withContext(Dispatchers.Default) {
                 val err = Checker.checkSyntax(code)
-                withContext(Dispatchers.Main) {
-                    syntaxError = err
-                }
+                withContext(Dispatchers.Main) { syntaxError = err }
             }
         }
     }
 
     // ------------------------------------------------------------------
-    // Plugin transform (Fase 2) — dipicu dari Sidebar / Command Palette
+    // Plugin transform (Fase 2)
     // ------------------------------------------------------------------
 
     fun beautifyActiveFile() {
         val beautified = PluginHost.beautify(activeCode)
-        updateCode(beautified)
+        // beautify langsung tanpa debounce save agar terasa instan, tapi save async
+        activeCode = beautified
+        activeFile?.let { fileDrafts[it] = beautified }
+        viewModelScope.launch(Dispatchers.IO) {
+            activeFile?.let { FileManager.saveFile(filesDir, it, beautified) }
+        }
+        validateSyntaxDebounced(beautified)
+        refreshFiles()
     }
 
     fun optimizeActiveImports() {
         val optimized = PluginHost.optimizeImports(activeCode)
-        updateCode(optimized)
+        activeCode = optimized
+        activeFile?.let { fileDrafts[it] = optimized }
+        viewModelScope.launch(Dispatchers.IO) {
+            activeFile?.let { FileManager.saveFile(filesDir, it, optimized) }
+        }
+        validateSyntaxDebounced(optimized)
     }
 
     fun clearAllDrafts() {
-        openedFiles.forEach { FileManager.deleteFileIfExists(filesDir, it) }
-        openedFiles.clear()
-        fileDrafts.clear()
-        activeFile = null
-        activeCode = ""
-        syntaxError = null
-        prefs.edit().clear().apply()
-        loadSavedWorkspace()
-    }
-
-    override fun onCleared() {
-        super.onCleared()
-        scope.cancel()
+        viewModelScope.launch(Dispatchers.IO) {
+            openedFiles.toList().forEach { FileManager.deleteFileIfExists(filesDir, it) }
+            withContext(Dispatchers.Main) {
+                openedFiles.clear()
+                fileDrafts.clear()
+                activeFile = null
+                activeCode = ""
+                syntaxError = null
+                prefs.edit().clear().apply()
+                // recreate main.py sync
+                FileManager.saveFile(filesDir, "main.py", "# Welcome to ZCODE\nprint(\"Hello, ZCODE!\")\n")
+                loadSavedWorkspace()
+                refreshFilesSync()
+            }
+        }
     }
 }

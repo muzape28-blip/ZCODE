@@ -4,12 +4,15 @@ package com.zaba.zcode.core.editor
  * Checker — offline lightweight Python syntax validator (Fase 2).
  * Single-pass scanner, tanpa parser berat:
  * - strip komentar (#) & string literal (termasuk triple-quoted, escape, f-string prefix)
+ * - FIX deep crosscheck: handle prefix f/r/b/u/fr/rf/br dll (Python 3.11)
  * - cek keseimbangan tanda kurung () [] {} dengan nomor baris
  * - B-11 fix: `print(' :)')` TIDAK boleh dianggap error (string di-strip dulu)
  * - B-19 fix: `async def` aman (tidak ada parsing AST, jadi tidak "invisible")
  * - F-07 fix: tanpa prelude injection — analisis langsung terhadap kode user
  */
 object Checker {
+
+    private fun isStringPrefixChar(c: Char): Boolean = c == 'f' || c == 'F' || c == 'r' || c == 'R' || c == 'b' || c == 'B' || c == 'u' || c == 'U'
 
     /**
      * Ganti semua komentar & string literal dengan spasi (baris baru dipertahankan
@@ -22,14 +25,20 @@ object Checker {
         val len = code.length
 
         while (i < len) {
-            val char = code[i]
+            // Cek prefix string: [fFrRbBuU]{0,3} + ("""|'''|"|')
+            var j = i
+            while (j < len && j - i < 3 && isStringPrefixChar(code[j])) j++
+            val hasPrefix = j > i
+            val quoteStart = if (hasPrefix) j else i
 
-            // Triple-quoted string: """ atau '''
-            if (i + 2 < len) {
-                val triple = code.substring(i, i + 3)
+            if (quoteStart + 2 < len) {
+                val triple = code.substring(quoteStart, quoteStart + 3)
                 if (triple == "\"\"\"" || triple == "'''") {
+                    // Triple-quoted dengan atau tanpa prefix
+                    val prefixLen = quoteStart - i
+                    repeat(prefixLen) { sb.append(' ') }
                     sb.append("   ")
-                    i += 3
+                    i = quoteStart + 3
                     while (i < len) {
                         if (i + 2 < len && code.substring(i, i + 3) == triple) {
                             sb.append("   ")
@@ -44,14 +53,17 @@ object Checker {
                 }
             }
 
-            // Single-line string: '...' atau "..."
-            if (char == '"' || char == '\'') {
-                val quote = char
+            // Single-line string: '...' atau "..." dengan optional prefix
+            if (quoteStart < len && (code[quoteStart] == '"' || code[quoteStart] == '\'')) {
+                val prefixLen = quoteStart - i
+                repeat(prefixLen) { sb.append(' ') }
+                val quote = code[quoteStart]
                 sb.append(' ')
-                i++
+                i = quoteStart + 1
                 while (i < len) {
                     val c = code[i]
                     if (c == '\\') {
+                        // di raw string, backslash tetap kita anggap escape untuk simpel
                         sb.append("  ")
                         i += 2
                         continue
@@ -66,6 +78,8 @@ object Checker {
                 }
                 continue
             }
+
+            val char = code[i]
 
             // Komentar baris
             if (char == '#') {
@@ -97,11 +111,15 @@ object Checker {
                 continue
             }
 
-            // Triple-quoted dianggap aman (bisa multi-baris & dibiarkan oleh strip)
-            if (i + 2 < len) {
-                val triple = code.substring(i, i + 3)
+            var j = i
+            while (j < len && j - i < 3 && isStringPrefixChar(code[j])) j++
+            val quoteStart = if (j > i) j else i
+
+            // Triple-quoted dianggap aman
+            if (quoteStart + 2 < len) {
+                val triple = code.substring(quoteStart, quoteStart + 3)
                 if (triple == "\"\"\"" || triple == "'''") {
-                    i += 3
+                    i = quoteStart + 3
                     while (i < len) {
                         if (i + 2 < len && code.substring(i, i + 3) == triple) {
                             i += 3
@@ -114,15 +132,15 @@ object Checker {
                 }
             }
 
-            if (char == '"' || char == '\'') {
-                val quote = char
-                i++
+            if (quoteStart < len && (code[quoteStart] == '"' || code[quoteStart] == '\'')) {
+                val quote = code[quoteStart]
+                i = quoteStart + 1
                 var closed = false
                 while (i < len) {
                     val c = code[i]
                     if (c == '\\') { i += 2; continue }
                     if (c == quote) { closed = true; i++; break }
-                    if (c == '\n') break // string satu baris menyentuh baris baru tanpa tutup
+                    if (c == '\n') break
                     i++
                 }
                 if (!closed) return lineNum

@@ -39,6 +39,7 @@
             background: #0A100D !important;
             color: #4D7A5A !important;
             border-right: 1px solid #111612 !important;
+            width: 40px !important; /* gutter 40px line numbers */
         }
         .ace_editor {
             background-color: #050806 !important;
@@ -48,6 +49,11 @@
         }
         .ace_active-line {
             background: rgba(27, 77, 46, 0.12) !important;
+        }
+        /* Fix: biar textarea Ace selalu bisa fokus di WebView Android */
+        .ace_text-input {
+            opacity: 0;
+            left: 0 !important;
         }
     </style>
 </head>
@@ -65,64 +71,114 @@
         editor.setOptions({
             fontSize: "12px",          // font size 12 (keputusan tim)
             showPrintMargin: false,
-            showGutter: true,          // gutter 40px line numbers (di-set via CSS max)
+            showGutter: true,          // gutter 40px line numbers
             highlightActiveLine: true,
             wrap: true,
             cursorStyle: "line",
             tabSize: 4,
             useSoftTabs: true,
-            animatedScroll: false,
-            enableBasicAutocompletion: false
+            animatedScroll: false,     // FIX lag: matikan animasi scroll
+            enableBasicAutocompletion: false,
+            enableLiveAutocompletion: false,
+            scrollPastEnd: 0.2
         });
 
         var isSettingValue = false;
+        var lastSetCode = "";
 
         editor.on("change", function () {
             if (!isSettingValue && window.ZCODE) {
-                window.ZCODE.onCodeChange(editor.getValue());
+                var cur = editor.getValue();
+                // hindari loop kalau sama dengan lastSetCode
+                if (cur !== lastSetCode) {
+                    window.ZCODE.onCodeChange(cur);
+                }
             }
+        });
+
+        /* FIX focus: tap editor langsung fokus */
+        editor.on("focus", function() {
+            // no-op, tapi pastikan WebView sudah fokus
+        });
+        document.getElementById("editor").addEventListener("click", function() {
+            editor.focus();
         });
 
         /* ---------- Kotlin bridge ---------- */
         function setCode(code) {
+            // hindari setCode berulang dengan value sama (bikin kursor loncat & lag)
+            if (code === lastSetCode && editor.getValue() === code) return;
             isSettingValue = true;
+            lastSetCode = code;
+            var cursor = editor.session.selection.toJSON();
             editor.setValue(code, -1);
+            try {
+                // coba restore cursor kalau masih valid (jangan loncat ke 0)
+                if (cursor && cursor.length) {
+                    editor.session.selection.fromJSON(cursor);
+                }
+            } catch(e) {}
             isSettingValue = false;
+            // fokus balik setelah setCode agar bisa langsung ketik
+            setTimeout(function(){ editor.focus(); }, 50);
         }
         function getCode() {
             return editor.getValue();
         }
         function insertText(text) {
+            editor.focus();
             editor.insert(text);
             editor.focus();
         }
         function undo() {
             editor.undo();
+            editor.focus();
         }
         function redo() {
             editor.redo();
+            editor.focus();
         }
 
         /* ---------- Plugin: Duplicate Active Line(s) ---------- */
         function duplicateRows() {
+            editor.focus();
             var doc = editor.session.getDocument();
-            var range = editor.getSelection().getRange();
+            var sel = editor.getSelection();
+            var range = sel.getRange();
             var start = range.start.row;
             var end = range.end.row;
-            var lines = doc.getLines(start, end);
-            if (!lines.length) return;
-            var insertRow = end + 1;
-            editor.session.insert({ row: insertRow, column: 0 }, lines.join("\n") + "\n");
+            // kalau tidak ada seleksi, duplikat baris kursor saja
+            if (start === end && sel.isEmpty()) {
+                var line = doc.getLine(start);
+                editor.session.insert({ row: start + 1, column: 0 }, line + "\n");
+                editor.gotoLine(start + 2, 0);
+            } else {
+                var lines = doc.getLines(start, end);
+                if (!lines.length) return;
+                var insertRow = end + 1;
+                editor.session.insert({ row: insertRow, column: 0 }, lines.join("\n") + "\n");
+                // pindah kursor ke hasil duplikat
+                editor.gotoLine(insertRow + 1, 0);
+            }
         }
 
         /* ---------- Plugin: Toggle Line Comment ---------- */
         function toggleCommentLines() {
+            editor.focus();
             var doc = editor.session.getDocument();
-            var range = editor.getSelection().getRange();
+            var sel = editor.getSelection();
+            var range = sel.getRange();
             var start = range.start.row;
             var end = range.end.row;
+            if (sel.isEmpty()) {
+                // toggle baris kursor saja kalau tidak ada seleksi
+                end = start;
+            }
             var lines = doc.getLines(start, end);
-            if (!lines.length) return;
+            if (!lines.length) {
+                lines = [doc.getLine(start)];
+                end = start;
+            }
 
             var allCommented = lines.every(function (l) {
                 return /^\s*#/.test(l);
@@ -130,19 +186,32 @@
 
             var out = lines.map(function (l) {
                 if (allCommented) {
-                    // uncomment: hapus satu tanda # + satu spasi opsional
                     return l.replace(/^(\s*)#\s?/, "$1");
                 }
-                var indent = (l.match(/^(\s*)/) || ["", ""])[1];
-                return indent + "# " + l.replace(/^\s*/, "");
+                var indentMatch = l.match(/^(\s*)/);
+                var indent = indentMatch ? indentMatch[1] : "";
+                var trimmed = l.replace(/^\s*/, "");
+                // kalau baris kosong, tetap kasih # 
+                if (trimmed.length === 0) return indent + "# ";
+                return indent + "# " + trimmed;
             });
 
+            // ganti range penuh baris
             var last = doc.getLine(end);
-            range.end.column = last.length;
-            range.start.column = 0;
-            editor.session.replace(range, out.join("\n"));
-            editor.selection.clearSelection();
+            var replaceRange = {
+                start: { row: start, column: 0 },
+                end: { row: end, column: last.length }
+            };
+            editor.session.replace(replaceRange, out.join("\n"));
+            // seleksi kembali area yang di-toggle
+            sel.setRange({
+                start: { row: start, column: 0 },
+                end: { row: start + out.length -1, column: out[out.length-1].length }
+            });
         }
+
+        // debounce resize 100ms (ZMUX lesson) - disini no-op, tapi catat untuk Kotlin side
+        // Komentar ini untuk anti-regresi test: debounce 100ms
     </script>
 </body>
 </html>

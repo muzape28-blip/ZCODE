@@ -16,14 +16,19 @@ object FileManager {
         if (".." in name || "/" in name || "\\" in name || "\u0000" in name) return null
         val trimmed = name.trim()
         if (trimmed.length > MAX_FILENAME_LEN) return null
-        if (trimmed.startsWith(".") || trimmed.startsWith("_")) return null
+        if (trimmed.startsWith(".")) return null
+        // FIX deep crosscheck: jangan blok "__init__.py" yang umum di Python
+        // Blok hanya file yang diawali single underscore, bukan double underscore
+        if (trimmed.startsWith("_") && !trimmed.startsWith("__")) return null
         if (trimmed == ".py" || trimmed.isEmpty()) return null
-        if (!Regex("^[A-Za-z0-9][A-Za-z0-9_\\-\\.]*$").matches(trimmed)) return null
+        if (!Regex("^[A-Za-z0-9_][A-Za-z0-9_\\-\\.]*$").matches(trimmed)) return null
+        // Harus .py, tapi __init__.py sudah .py
+        if (trimmed.contains("..")) return null
         return if (trimmed.endsWith(".py")) trimmed else "$trimmed.py"
     }
 
     fun listFiles(filesDir: File): List<Map<String, Any>> =
-        filesDir.listFiles { f -> f.name.endsWith(".py") && !f.name.startsWith(".") && !f.name.startsWith("_") }
+        filesDir.listFiles { f -> f.name.endsWith(".py") && !f.name.startsWith(".") && !(f.name.startsWith("_") && !f.name.startsWith("__")) }
             ?.map { mapOf("name" to it.name, "size" to it.length()) } ?: emptyList()
 
     fun readFile(filesDir: File, filename: String): Result<String> {

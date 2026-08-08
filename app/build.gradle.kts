@@ -73,11 +73,16 @@ android {
 
 // Chaquopy 15.0 — Python 3.11 in-process runtime (Fase 1: on-device execution).
 // - version 3.11: satu-satunya yang masih mendukung armeabi-v7a (HP user)
-// - pip build-time sengaja kosong; instalasi package lewat PipScreen saat runtime
+// - FIX pip ModuleNotFoundError: bundle pip/setuptools/wheel agar `import pip` ada saat runtime PipScreen
 // - buildPython: CI menyediakan python3 (3.11) di PATH
 chaquopy {
     defaultConfig {
         version = "3.11"
+        pip {
+            install("pip")
+            install("setuptools")
+            install("wheel")
+        }
     }
 }
 
