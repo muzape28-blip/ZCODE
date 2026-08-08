@@ -350,7 +350,16 @@ fun WorkbenchScreen(
                     }
                 }
 
-                Box(modifier = Modifier.weight(1f)) {
+                // Tap area editor = fokus WebView + show keyboard
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable {
+                            webViewRef.value?.requestFocus()
+                            webViewRef.value?.requestFocusFromTouch()
+                            webViewRef.value?.evaluateJavascript("focusEditor();", null)
+                        }
+                ) {
                     EditorScreen(
                         code = vm.activeCode,
                         fileName = vm.activeFile,

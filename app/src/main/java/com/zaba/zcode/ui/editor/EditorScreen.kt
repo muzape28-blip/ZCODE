@@ -76,7 +76,7 @@ fun EditorScreen(
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { context ->
-                WebView(context).apply {
+                ZcodeWebView(context).apply {
                     settings.apply {
                         javaScriptEnabled = true
                         domStorageEnabled = true
@@ -91,8 +91,9 @@ fun EditorScreen(
                     }
                     isFocusable = true
                     isFocusableInTouchMode = true
-                    // hardware layer biar Ace smooth
-                    setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
+                    // FIX: jangan HARDWARE, pakai SOFTWARE biar keyboard muncul di semua device (ref StackOverflow)
+                    // HARDWARE kadang bikin IME tidak attach di Samsung/Xiaomi
+                    setLayerType(android.view.View.LAYER_TYPE_SOFTWARE, null)
 
                     webViewClient = object : WebViewClient() {
                         override fun onPageFinished(view: WebView?, url: String?) {
