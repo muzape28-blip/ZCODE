@@ -161,9 +161,9 @@ object Verifier {
                     val trimmed = line.trim()
                     if (trimmed.isBlank()) continue
                     val parts = trimmed.split(",")
-                    val rawRelPath = parts[0].trim().replace(\, /)
+                    val rawRelPath = parts[0].trim().replace('\\', '/')
                     if (!isSafeEntryName(rawRelPath)) {
-                        return VerifyResult(false, "Entry RECORD tidak aman: ")
+                        return VerifyResult(false, "Entry RECORD tidak aman: '$rawRelPath'")
                     }
                     val hashStr = if (parts.size > 1 && parts[1].isNotBlank()) parts[1].trim() else null
                     val sizeVal = if (parts.size > 2 && parts[2].isNotBlank()) parts[2].trim().toLongOrNull() else null
@@ -189,25 +189,25 @@ object Verifier {
             if (!fileCanonical.startsWith(baseCanonical + File.separator)) {
                 return VerifyResult(false, "Berkas di luar extractedDir: ${file.name}")
             }
-            val relPath = fileCanonical.substring(baseCanonical.length + 1).replace(\, /)
+            val relPath = fileCanonical.substring(baseCanonical.length + 1).replace('\\', '/')
 
             if (relPath in allowedExceptions) {
                 continue
             }
 
             val entry = recordEntries[relPath]
-                ?: return VerifyResult(false, "Berkas tak terdaftar di RECORD: ")
+                ?: return VerifyResult(false, "Berkas tak terdaftar di RECORD: '$relPath'")
 
             val (expectedHash, expectedSize) = entry
             if (expectedSize != null && file.length() != expectedSize) {
-                return VerifyResult(false, "Ukuran berkas tidak cocok untuk : expected $expectedSize, got ${file.length()}")
+                return VerifyResult(false, "Ukuran berkas tidak cocok untuk '$relPath': expected $expectedSize, got ${file.length()}")
             }
 
             if (expectedHash != null && expectedHash.startsWith("sha256=")) {
                 val expectedBase64 = expectedHash.removePrefix("sha256=")
                 val actualBase64 = sha256Base64Url(file)
                 if (actualBase64 != expectedBase64) {
-                    return VerifyResult(false, "Hash SHA-256 tidak cocok untuk ")
+                    return VerifyResult(false, "Hash SHA-256 tidak cocok untuk '$relPath'")
                 }
             }
         }
