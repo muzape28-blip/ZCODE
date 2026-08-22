@@ -113,8 +113,9 @@ object Verifier {
         if (distInfos.isEmpty()) {
             return VerifyResult(false, "Wheel tidak mengandung *.dist-info (metadata invalid)") to null
         }
-        val metadata = File(distInfos.first(), "METADATA")
-        val record = File(distInfos.first(), "RECORD")
+        val distInfo = distInfos.first()
+        val metadata = File(distInfo, "METADATA")
+        val record = File(distInfo, "RECORD")
         if (!metadata.exists()) {
             return VerifyResult(false, "METADATA tidak ditemukan di dist-info") to null
         }
@@ -127,6 +128,104 @@ object Verifier {
         if (name.isNullOrBlank() || version.isNullOrBlank()) {
             return VerifyResult(false, "METADATA tidak memiliki Name/Version yang valid") to null
         }
+        val recordRes = verifyRecord(extractedDir)
+        if (!recordRes.ok) {
+            return recordRes to null
+        }
         return VerifyResult(true, null) to WheelMeta(name, version)
+    }
+
+    /**
+     * Verifikasi integritas RECORD (PEP 427):
+     * - Setiap berkas di extractedDir wajib terdaftar di RECORD.
+     * - Exceptions per PEP 427: <dist-info>/RECORD dan signature file <dist-info>/RECORD.jws, <dist-info>/RECORD.p7s.
+     * - Tolak berkas tak terdaftar, path traversal, serta mismatch hash/size.
+     */
+    fun verifyRecord(extractedDir: File): VerifyResult {
+        val distInfos = extractedDir.listFiles()?.filter {
+            it.isDirectory && it.name.endsWith(".dist-info")
+        } ?: emptyList()
+        if (distInfos.isEmpty()) {
+            return VerifyResult(false, "Wheel tidak mengandung *.dist-info")
+        }
+        val distInfo = distInfos.first()
+        val recordFile = File(distInfo, "RECORD")
+        if (!recordFile.exists()) {
+            return VerifyResult(false, "RECORD tidak ditemukan")
+        }
+
+        val recordEntries = mutableMapOf<String, Pair<String?, Long?>>()
+        try {
+            recordFile.useLines { lines ->
+                for (line in lines) {
+                    val trimmed = line.trim()
+                    if (trimmed.isBlank()) continue
+                    val parts = trimmed.split(",")
+                    val rawRelPath = parts[0].trim().replace(\, /)
+                    if (!isSafeEntryName(rawRelPath)) {
+                        return VerifyResult(false, "Entry RECORD tidak aman: ")
+                    }
+                    val hashStr = if (parts.size > 1 && parts[1].isNotBlank()) parts[1].trim() else null
+                    val sizeVal = if (parts.size > 2 && parts[2].isNotBlank()) parts[2].trim().toLongOrNull() else null
+                    recordEntries[rawRelPath] = Pair(hashStr, sizeVal)
+                }
+            }
+        } catch (e: Exception) {
+            return VerifyResult(false, "Gagal membaca RECORD: ${e.message}")
+        }
+
+        val distInfoRelDir = distInfo.name
+        val allowedExceptions = setOf(
+            "$distInfoRelDir/RECORD",
+            "$distInfoRelDir/RECORD.jws",
+            "$distInfoRelDir/RECORD.p7s"
+        )
+
+        val baseCanonical = extractedDir.canonicalPath
+        val allFiles = extractedDir.walkTopDown().filter { it.isFile }.toList()
+
+        for (file in allFiles) {
+            val fileCanonical = file.canonicalPath
+            if (!fileCanonical.startsWith(baseCanonical + File.separator)) {
+                return VerifyResult(false, "Berkas di luar extractedDir: ${file.name}")
+            }
+            val relPath = fileCanonical.substring(baseCanonical.length + 1).replace(\, /)
+
+            if (relPath in allowedExceptions) {
+                continue
+            }
+
+            val entry = recordEntries[relPath]
+                ?: return VerifyResult(false, "Berkas tak terdaftar di RECORD: ")
+
+            val (expectedHash, expectedSize) = entry
+            if (expectedSize != null && file.length() != expectedSize) {
+                return VerifyResult(false, "Ukuran berkas tidak cocok untuk : expected $expectedSize, got ${file.length()}")
+            }
+
+            if (expectedHash != null && expectedHash.startsWith("sha256=")) {
+                val expectedBase64 = expectedHash.removePrefix("sha256=")
+                val actualBase64 = sha256Base64Url(file)
+                if (actualBase64 != expectedBase64) {
+                    return VerifyResult(false, "Hash SHA-256 tidak cocok untuk ")
+                }
+            }
+        }
+
+        return VerifyResult(true, null)
+    }
+
+    private fun sha256Base64Url(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buf = ByteArray(64 * 1024)
+            while (true) {
+                val n = input.read(buf)
+                if (n < 0) break
+                digest.update(buf, 0, n)
+            }
+        }
+        val bytes = digest.digest()
+        return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
     }
 }

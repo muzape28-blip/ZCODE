@@ -4784,3 +4784,71 @@ class TestUninstallHardeningV1019:
         skills = read(ROOT / "docs/SKILLS.md")
         assert "SKILL 20 — Uninstall tanpa reverse graph" in skills
         assert "Satu operasi sukses memiliki satu owner telemetry" in skills
+
+
+class TestV1021DataSafetyAndLicensingGuards:
+    """Guards for v1.0.21: Package transactions, Save resurrection protection, PEP 427 RECORD verifier, Option B licensing."""
+
+    def test_transaction_manager_commit_boundary(self):
+        tx = strip_kt_comments(read(APP / "core/packageengine/TransactionManager.kt"))
+        assert "runCatching { onLog(" in tx, "onLog post-stage error must not trigger rollback"
+        assert "runCatching { tx.dir.deleteRecursively() }" in tx, "post-commit cleanup must be best-effort"
+
+        start_post_commit = tx.index("runCatching { tx.dir.deleteRecursively() }")
+        end_activate = tx.index("private fun rollbackActivate")
+        post_commit = tx[start_post_commit:end_activate]
+        assert "rollbackActivate" not in post_commit, "rollbackActivate must not be called after state commit boundary"
+
+    def test_workspace_view_model_stale_save_resurrection_protection(self):
+        vm = strip_kt_comments(read(APP / "WorkspaceViewModel.kt"))
+        assert "private val workspaceMutationLock = Any()" in vm
+        assert "private val documentRevisions = mutableMapOf<String, Long>()" in vm
+        assert "private fun invalidateRevision(filename: String)" in vm
+
+        # Invalidation must be invoked in all workspace structure mutations
+        end_markers = {
+            "fun closeFile(": "persistWorkspaceState()",
+            "fun renameFile(": "return true",
+            "fun deleteFile(": "closeFile(secured)",
+            "fun clearAllDrafts(": "loadSavedWorkspace()"
+        }
+        for op, end_marker in end_markers.items():
+            start = vm.index(op)
+            end = vm.index(end_marker, start)
+            block = vm[start:end]
+            assert "invalidateRevision" in block, f"{op} missing invalidateRevision"
+
+        # Background save jobs must capture and recheck revision
+        for async_save in ("fun updateCode(", "fun updateCodeForFile("):
+            start = vm.index(async_save)
+            block = vm[start:start+800]
+            assert "capturedRev" in block or "documentRevisions" in block, f"{async_save} missing capturedRev"
+
+    def test_verifier_pep427_record_verification_and_exceptions(self):
+        verifier = strip_kt_comments(read(APP / "core/packageengine/Verifier.kt"))
+        assert "fun verifyRecord(extractedDir: File): VerifyResult" in verifier
+        assert "private fun sha256Base64Url(file: File): String" in verifier
+        assert "RECORD.jws" in verifier
+        assert "RECORD.p7s" in verifier
+        assert "verifyRecord(extractedDir)" in verifier
+
+    def test_licensing_option_b_and_notice(self):
+        license_txt = read(ROOT / "LICENSE")
+        notice_txt = read(ROOT / "NOTICE")
+        about_txt = read(APP / "ui/settings/AboutScreen.kt")
+
+        assert "GNU GENERAL PUBLIC LICENSE" in license_txt
+        assert "ZABACODE" in license_txt
+        assert "Option B" in license_txt
+
+        assert "ZABACODE" in notice_txt
+        assert "GNU General Public License v3.0" in notice_txt
+        assert "MIT License" in notice_txt
+
+        assert "Option B" in about_txt
+        assert "LICENSE_TEXT" in about_txt
+
+        for forbidden in ("sole copyright holder", "sole owner"):
+            assert forbidden not in license_txt.lower()
+            assert forbidden not in notice_txt.lower()
+            assert forbidden not in about_txt.lower()

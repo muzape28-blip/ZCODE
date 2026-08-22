@@ -140,7 +140,15 @@ class WorkspaceViewModel(app: Application) : AndroidViewModel(app) {
     )
         private set
 
+    private val workspaceMutationLock = Any()
+    private val documentRevisions = mutableMapOf<String, Long>()
     private val fileDrafts = mutableMapOf<String, String>()
+
+    private fun invalidateRevision(filename: String) {
+        synchronized(workspaceMutationLock) {
+            documentRevisions[filename] = (documentRevisions[filename] ?: 0L) + 1L
+        }
+    }
 
     /** Audit 2026-08: asal-usul file eksternal (nama file workspace → URI SAF).
      *  Dipakai menu Save (timpa file asli) & Save as (re-link). Persist di prefs. */
@@ -454,15 +462,20 @@ class WorkspaceViewModel(app: Application) : AndroidViewModel(app) {
         saveJob?.cancel()
         val current = activeFile
         val draftsToSave = linkedMapOf<String, String>()
-        if (verifyAllDrafts) {
-            fileDrafts.forEach { (name, code) ->
-                if (name in openedFiles) draftsToSave[name] = code
+        synchronized(workspaceMutationLock) {
+            if (verifyAllDrafts) {
+                fileDrafts.forEach { (name, code) ->
+                    if (name in openedFiles) draftsToSave[name] = code
+                }
+                if (current != null && current in openedFiles) draftsToSave[current] = activeCode
+            } else if (current != null && current in openedFiles && pendingSave) {
+                draftsToSave[current] = activeCode
             }
-            if (current != null) draftsToSave[current] = activeCode
-        } else if (current != null && pendingSave) {
-            draftsToSave[current] = activeCode
         }
         for ((name, code) in draftsToSave) {
+            synchronized(workspaceMutationLock) {
+                if (name !in openedFiles) return@forEach
+            }
             val result = FileManager.saveFile(filesDir, name, code)
             if (result.isFailure) {
                 com.zaba.zcode.core.diagnostics.Breadcrumb.log(
@@ -494,13 +507,23 @@ class WorkspaceViewModel(app: Application) : AndroidViewModel(app) {
         if (newCode == activeCode) return
         activeCode = newCode
         val current = activeFile ?: return
-        fileDrafts[current] = newCode
+        val capturedRev: Long
+        synchronized(workspaceMutationLock) {
+            fileDrafts[current] = newCode
+            capturedRev = (documentRevisions[current] ?: 0L) + 1L
+            documentRevisions[current] = capturedRev
+        }
 
         pendingSave = true
         saveJob?.cancel()
         saveJob = scope.launch {
             delay(600)
             withContext(Dispatchers.IO) {
+                synchronized(workspaceMutationLock) {
+                    if (current !in openedFiles) return@withContext
+                    if (documentRevisions[current] != capturedRev) return@withContext
+                    if (fileDrafts[current] != newCode) return@withContext
+                }
                 flushSaveSync()
             }
         }
@@ -516,10 +539,20 @@ class WorkspaceViewModel(app: Application) : AndroidViewModel(app) {
             updateCode(newCode)
             return
         }
-        if (filename !in openedFiles) return
-        if (fileDrafts[filename] == newCode) return
-        fileDrafts[filename] = newCode
+        val capturedRev: Long
+        synchronized(workspaceMutationLock) {
+            if (filename !in openedFiles) return
+            if (fileDrafts[filename] == newCode) return
+            fileDrafts[filename] = newCode
+            capturedRev = (documentRevisions[filename] ?: 0L) + 1L
+            documentRevisions[filename] = capturedRev
+        }
         scope.launch(Dispatchers.IO) {
+            synchronized(workspaceMutationLock) {
+                if (filename !in openedFiles) return@launch
+                if (documentRevisions[filename] != capturedRev) return@launch
+                if (fileDrafts[filename] != newCode) return@launch
+            }
             runCatching { FileManager.saveFile(filesDir, filename, newCode) }
         }
     }
@@ -742,19 +775,22 @@ class WorkspaceViewModel(app: Application) : AndroidViewModel(app) {
         if (activeFile == filename) {
             flushSaveSync()
         }
-        val idx = openedFiles.indexOf(filename)
-        if (idx == -1) return
-        openedFiles.removeAt(idx)
-        fileDrafts.remove(filename)
-        lastClosed = filename to System.currentTimeMillis()
-        if (activeFile == filename) {
-            if (openedFiles.isNotEmpty()) {
-                val nextIdx = if (idx < openedFiles.size) idx else openedFiles.size - 1
-                selectFile(openedFiles[nextIdx])
-            } else {
-                activeFile = null
-                activeCode = ""
-                syntaxError = null
+        synchronized(workspaceMutationLock) {
+            invalidateRevision(filename)
+            fileDrafts.remove(filename)
+            val idx = openedFiles.indexOf(filename)
+            if (idx == -1) return
+            openedFiles.removeAt(idx)
+            lastClosed = filename to System.currentTimeMillis()
+            if (activeFile == filename) {
+                if (openedFiles.isNotEmpty()) {
+                    val nextIdx = if (idx < openedFiles.size) idx else openedFiles.size - 1
+                    selectFile(openedFiles[nextIdx])
+                } else {
+                    activeFile = null
+                    activeCode = ""
+                    syntaxError = null
+                }
             }
         }
         persistWorkspaceState()
@@ -765,18 +801,22 @@ class WorkspaceViewModel(app: Application) : AndroidViewModel(app) {
         val securedNew = FileManager.secureFilename(newName) ?: return false
         val oldFile = File(filesDir, securedOld)
         val newFile = File(filesDir, securedNew)
-        if (oldFile.exists() && !newFile.exists()) {
-            val ok = oldFile.renameTo(newFile)
-            if (ok) {
-                val idx = openedFiles.indexOf(securedOld)
-                if (idx != -1) openedFiles[idx] = securedNew
-                if (activeFile == securedOld) activeFile = securedNew
-                val draft = fileDrafts.remove(securedOld)
-                if (draft != null) fileDrafts[securedNew] = draft
-                externalOrigins.remove(securedOld)?.let { externalOrigins[securedNew] = it }
-                persistExternalOrigins()
-                persistWorkspaceState()
-                return true
+        synchronized(workspaceMutationLock) {
+            invalidateRevision(securedOld)
+            invalidateRevision(securedNew)
+            if (oldFile.exists() && !newFile.exists()) {
+                val ok = oldFile.renameTo(newFile)
+                if (ok) {
+                    val idx = openedFiles.indexOf(securedOld)
+                    if (idx != -1) openedFiles[idx] = securedNew
+                    if (activeFile == securedOld) activeFile = securedNew
+                    val draft = fileDrafts.remove(securedOld)
+                    if (draft != null) fileDrafts[securedNew] = draft
+                    externalOrigins.remove(securedOld)?.let { externalOrigins[securedNew] = it }
+                    persistExternalOrigins()
+                    persistWorkspaceState()
+                    return true
+                }
             }
         }
         return false
@@ -785,10 +825,14 @@ class WorkspaceViewModel(app: Application) : AndroidViewModel(app) {
     fun deleteFile(filename: String): Boolean {
         val secured = FileManager.secureFilename(filename) ?: return false
         val file = File(filesDir, secured)
-        if (file.exists() && file.delete()) {
+        synchronized(workspaceMutationLock) {
+            invalidateRevision(secured)
+            fileDrafts.remove(secured)
             externalOrigins.remove(secured)
-            persistExternalOrigins()
-            closeFile(secured)
+        }
+        persistExternalOrigins()
+        closeFile(secured)
+        if (file.exists() && file.delete()) {
             return true
         }
         return false
@@ -829,10 +873,17 @@ class WorkspaceViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun clearAllDrafts() {
-        openedFiles.forEach { FileManager.deleteFileIfExists(filesDir, it) }
-        openedFiles.clear()
-        fileDrafts.clear()
-        externalOrigins.clear()
+        synchronized(workspaceMutationLock) {
+            saveJob?.cancel()
+            openedFiles.forEach {
+                invalidateRevision(it)
+                FileManager.deleteFileIfExists(filesDir, it)
+            }
+            openedFiles.clear()
+            fileDrafts.clear()
+            documentRevisions.clear()
+            externalOrigins.clear()
+        }
         persistExternalOrigins()
         activeFile = null
         activeCode = ""

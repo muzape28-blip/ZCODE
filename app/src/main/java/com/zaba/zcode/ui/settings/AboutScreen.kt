@@ -59,27 +59,15 @@ import com.zaba.zcode.R
  * ruang kosong, telusur penuh bisa discroll dengan pembatas.
  */
 
-private const val MIT_LICENSE_TEXT = """MIT License
+private const val LICENSE_TEXT = """ZCODE Licensing Terms & Provenance (Option B)
 
-Copyright (c) 2026 ZCODE contributors
+This project contains code derived from ZABACODE (https://github.com/muzape28-blip/ZABACODE) and independent additions by ZCODE contributors.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+- ZABACODE Derived Code: Copyright (c) 2026 ZABACODE contributors (GNU General Public License v3.0).
+- Independent ZCODE Additions: Copyright (c) 2026 ZCODE contributors (MIT License).
+- Combined Distribution: As a combined work, ZCODE is distributed under the terms of the GNU General Public License v3.0 (GPLv3).
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE."""
+Provenance and attribution of all contributors are preserved."""
 
 @Composable
 fun AboutScreen(
@@ -167,22 +155,18 @@ fun AboutScreen(
             Divider(color = Color.White.copy(alpha = 0.08f))
 
             Text(
-                "License — MIT",
+                "License & Provenance — Option B",
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.primary
             )
             Text(
-                "ZCODE itu open source. Siapa pun bebas membaca, memakai, fork, dan " +
-                    "berkontribusi — tidak perlu izin, tidak perlu sungkan.",
+                "ZCODE itu open source (GPLv3 Option B + ZABACODE provenance). Siapa pun bebas membaca, memakai, fork, dan berkontribusi.",
                 style = MaterialTheme.typography.bodySmall,
                 color = Color.LightGray,
                 textAlign = TextAlign.Center
             )
             Box(
                 modifier = Modifier
-                    // Kerapian landscape (UAT 2026-08-18): tanpa batas ini,
-                    // kotak license melar 1600px — pita teks panjang canggung.
-                    // Portrait (±360dp) tak pernah menyentuh batas 480dp.
                     .widthIn(max = 480.dp)
                     .fillMaxWidth()
                     .height(150.dp)
@@ -194,7 +178,7 @@ fun AboutScreen(
                     .padding(12.dp)
             ) {
                 Text(
-                    MIT_LICENSE_TEXT,
+                    LICENSE_TEXT,
                     fontSize = 11.sp,
                     lineHeight = 15.sp,
                     fontFamily = FontFamily.Monospace,

@@ -123,7 +123,7 @@ jobs:
 
   compile-production-source:
     # Compiler evidence for production PR without creating/uploading a Debug APK.
-    if: github.event_name == 'pull_request' && github.head_ref == 'arena/v1020-production'
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-22.04
     needs: check
     permissions:

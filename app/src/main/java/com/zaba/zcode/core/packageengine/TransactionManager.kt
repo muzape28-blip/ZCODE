@@ -142,13 +142,13 @@ class TransactionManager(private val context: Context) {
                 versionDir.copyRecursively(File(target, p.version), overwrite = true)
                 moved.add(target)
                 current.put(p.canonicalName, installedEntry(p, "site-packages/${p.canonicalName}/${p.version}"))
-                onLog("    activate: ${p.canonicalName}@${p.version}")
+                runCatching { onLog("    activate: ${p.canonicalName}@${p.version}") }
             }
         } catch (e: Exception) {
             return rollbackActivate(tx, moved, backupFile, installedFile, "Aktivasi gagal: ${e.message}")
         }
 
-        // 4. tulis state baru (temp + rename)
+        // 4. tulis state baru (temp + rename) - COMMIT BOUNDARY
         try {
             val tmp = File(stateDir, "installed.json.tmp")
             tmp.writeText(current.toString())
@@ -161,8 +161,8 @@ class TransactionManager(private val context: Context) {
             return rollbackActivate(tx, moved, backupFile, installedFile, "Tulis state gagal: ${e.message}")
         }
 
-        // 5. bersihkan staging + jurnal sukses
-        tx.dir.deleteRecursively()
+        // 5. POST-COMMIT: bersihkan staging + jurnal sukses (best-effort, no rollback)
+        runCatching { tx.dir.deleteRecursively() }
         journal(tx.id, "install", "SUCCESS", null, null)
         return true to "OK"
     }
