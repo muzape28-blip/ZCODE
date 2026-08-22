@@ -6,6 +6,12 @@ docs/PLAN_BATCH_ANTI_SEPI.md §2.5. Logika kelas dipertahankan apa adanya
 dari zabacode/plugins/implementations.py agar semantik & edge case tetap
 identik (battle-tested). Hanya antarmuka entry (run/run_json/CLI) yang baru.
 
+RELICENSE (explicit, same copyright holder): muzape28-blip is the sole
+copyright holder of ZABACODE. These ported portions are hereby additionally
+licensed to the ZCODE project under the MIT License (repo root LICENSE),
+alongside their original GPLv3 provenance. This is a license grant by the
+copyright holder, not a claim that third-party ZABACODE code was relicensed.
+
 Antarmuka:
     run(plugin_id, code) -> dict  {ok, code, report}
     run_json(plugin_id, code) -> str (JSON — dipakai Chaquopy bridge & CLI)
