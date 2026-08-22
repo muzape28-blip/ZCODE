@@ -474,7 +474,7 @@ class WorkspaceViewModel(app: Application) : AndroidViewModel(app) {
         }
         for ((name, code) in draftsToSave) {
             synchronized(workspaceMutationLock) {
-                if (name !in openedFiles) return@forEach
+                if (name !in openedFiles) continue
             }
             val result = FileManager.saveFile(filesDir, name, code)
             if (result.isFailure) {
