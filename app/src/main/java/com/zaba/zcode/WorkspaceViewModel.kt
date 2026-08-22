@@ -473,9 +473,10 @@ class WorkspaceViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         for ((name, code) in draftsToSave) {
-            synchronized(workspaceMutationLock) {
-                if (name !in openedFiles) continue
+            val isOpened = synchronized(workspaceMutationLock) {
+                name in openedFiles
             }
+            if (!isOpened) continue
             val result = FileManager.saveFile(filesDir, name, code)
             if (result.isFailure) {
                 com.zaba.zcode.core.diagnostics.Breadcrumb.log(
@@ -518,13 +519,15 @@ class WorkspaceViewModel(app: Application) : AndroidViewModel(app) {
         saveJob?.cancel()
         saveJob = scope.launch {
             delay(600)
-            withContext(Dispatchers.IO) {
-                synchronized(workspaceMutationLock) {
-                    if (current !in openedFiles) return@withContext
-                    if (documentRevisions[current] != capturedRev) return@withContext
-                    if (fileDrafts[current] != newCode) return@withContext
+            val shouldSave = synchronized(workspaceMutationLock) {
+                current in openedFiles &&
+                    documentRevisions[current] == capturedRev &&
+                    fileDrafts[current] == newCode
+            }
+            if (shouldSave) {
+                withContext(Dispatchers.IO) {
+                    flushSaveSync()
                 }
-                flushSaveSync()
             }
         }
         validateSyntaxDebounced(newCode)
@@ -539,21 +542,24 @@ class WorkspaceViewModel(app: Application) : AndroidViewModel(app) {
             updateCode(newCode)
             return
         }
-        val capturedRev: Long
-        synchronized(workspaceMutationLock) {
-            if (filename !in openedFiles) return
-            if (fileDrafts[filename] == newCode) return
+        val capturedRev: Long? = synchronized(workspaceMutationLock) {
+            if (filename !in openedFiles) return@synchronized null
+            if (fileDrafts[filename] == newCode) return@synchronized null
             fileDrafts[filename] = newCode
-            capturedRev = (documentRevisions[filename] ?: 0L) + 1L
-            documentRevisions[filename] = capturedRev
+            val rev = (documentRevisions[filename] ?: 0L) + 1L
+            documentRevisions[filename] = rev
+            rev
         }
+        if (capturedRev == null) return
         scope.launch(Dispatchers.IO) {
-            synchronized(workspaceMutationLock) {
-                if (filename !in openedFiles) return@launch
-                if (documentRevisions[filename] != capturedRev) return@launch
-                if (fileDrafts[filename] != newCode) return@launch
+            val shouldSave = synchronized(workspaceMutationLock) {
+                filename in openedFiles &&
+                    documentRevisions[filename] == capturedRev &&
+                    fileDrafts[filename] == newCode
             }
-            runCatching { FileManager.saveFile(filesDir, filename, newCode) }
+            if (shouldSave) {
+                runCatching { FileManager.saveFile(filesDir, filename, newCode) }
+            }
         }
     }
 
@@ -775,24 +781,29 @@ class WorkspaceViewModel(app: Application) : AndroidViewModel(app) {
         if (activeFile == filename) {
             flushSaveSync()
         }
-        synchronized(workspaceMutationLock) {
+        val isAlreadyClosed = synchronized(workspaceMutationLock) {
             invalidateRevision(filename)
             fileDrafts.remove(filename)
             val idx = openedFiles.indexOf(filename)
-            if (idx == -1) return
-            openedFiles.removeAt(idx)
-            lastClosed = filename to System.currentTimeMillis()
-            if (activeFile == filename) {
-                if (openedFiles.isNotEmpty()) {
-                    val nextIdx = if (idx < openedFiles.size) idx else openedFiles.size - 1
-                    selectFile(openedFiles[nextIdx])
-                } else {
-                    activeFile = null
-                    activeCode = ""
-                    syntaxError = null
+            if (idx == -1) {
+                true
+            } else {
+                openedFiles.removeAt(idx)
+                lastClosed = filename to System.currentTimeMillis()
+                if (activeFile == filename) {
+                    if (openedFiles.isNotEmpty()) {
+                        val nextIdx = if (idx < openedFiles.size) idx else openedFiles.size - 1
+                        selectFile(openedFiles[nextIdx])
+                    } else {
+                        activeFile = null
+                        activeCode = ""
+                        syntaxError = null
+                    }
                 }
+                false
             }
         }
+        if (isAlreadyClosed) return
         persistWorkspaceState()
     }
 
