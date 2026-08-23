@@ -493,3 +493,62 @@ if __name__ == "__main__":
         print(run_json_with_param(sys.argv[1], _code, _param))
     else:
         print(run_json(sys.argv[1], _code))
+
+
+# ==============================================================================
+# Spike Intelligence Plugin Integration
+# ==============================================================================
+
+_SPIKE_ENGINE = None
+
+def _get_spike_engine():
+    global _SPIKE_ENGINE
+    if _SPIKE_ENGINE is None:
+        try:
+            from editor.intelligence_engine import SpikeIntelligenceEngine
+            _SPIKE_ENGINE = SpikeIntelligenceEngine()
+        except ImportError:
+            try:
+                from .editor.intelligence_engine import SpikeIntelligenceEngine
+                _SPIKE_ENGINE = SpikeIntelligenceEngine()
+            except Exception as e:
+                _SPIKE_ENGINE = None
+    return _SPIKE_ENGINE
+
+
+def run_spike_intelligence(code: str, action: str = "health_check", **kwargs) -> dict:
+    """Entry point untuk Spike Intelligence Engine via plugin runner."""
+    engine = _get_spike_engine()
+    if engine is None:
+        return {"ok": False, "error": "SpikeIntelligenceEngine not available"}
+
+    try:
+        if action == "health_check":
+            return {"ok": True, "health": engine.health_check()}
+        elif action == "autocomplete":
+            line = int(kwargs.get("line", 1))
+            col = int(kwargs.get("column", 0))
+            path = kwargs.get("path", None)
+            return {"ok": True, "completions": engine.autocomplete(code, (line, col), path=path)}
+        elif action == "goto_definition":
+            line = int(kwargs.get("line", 1))
+            col = int(kwargs.get("column", 0))
+            path = kwargs.get("path", None)
+            return {"ok": True, "definitions": engine.goto_definition(code, (line, col), path=path)}
+        elif action == "lint":
+            filename = kwargs.get("filename", "untitled.py")
+            return {"ok": True, "issues": engine.lint(code, filename=filename)}
+        elif action == "parse_ast":
+            version = kwargs.get("version", None)
+            return {"ok": True, "ast": engine.parse_ast(code, version=version)}
+        elif action == "analyze_complexity":
+            threshold = int(kwargs.get("threshold", 7))
+            return {"ok": True, "analysis": engine.analyze_complexity(code, threshold=threshold)}
+        elif action == "refactor":
+            operation = kwargs.get("operation", "rename")
+            new_code = engine.refactor(code, operation, **kwargs)
+            return {"ok": True, "code": new_code}
+        else:
+            return {"ok": False, "error": f"Unknown action: {action}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
