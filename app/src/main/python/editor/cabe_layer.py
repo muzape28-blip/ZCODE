@@ -1,7 +1,7 @@
 """
-Cabe Complexity Analysis Layer
+Cabe (McCabe) Complexity Analysis Layer
 
-Provides code complexity analysis using Cabe (McCabe) metrics.
+Provides code complexity analysis using McCabe metrics.
 """
 
 import logging
@@ -10,18 +10,14 @@ from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 
-class CabeComplexityAnalyzer:
-    """Wrapper for code complexity analysis."""
+class CabeWrapper:
+    """Wrapper for code complexity analysis using McCabe metrics."""
 
     def __init__(self):
         self.available = True  # Cabe is pure Python, no external deps
-        logger.info("Cabe complexity analyzer initialized")
 
     def analyze(self, code: str) -> Dict[str, Any]:
         """Analyze code complexity using McCabe metrics."""
-        if not self.available:
-            return {"error": "Analyzer not available"}
-
         try:
             tree = ast.parse(code)
             
@@ -38,6 +34,14 @@ class CabeComplexityAnalyzer:
                 "class_count": class_count,
                 "maintainability_index": self._calculate_maintainability(complexity, func_count),
                 "status": "success"
+            }
+        except SyntaxError as e:
+            logger.error(f"Syntax error in complexity analysis: {e}")
+            return {
+                "error": f"Syntax error: {e.msg}",
+                "line": e.lineno,
+                "column": e.offset,
+                "status": "error"
             }
         except Exception as e:
             logger.error(f"Complexity analysis error: {e}")
@@ -63,3 +67,16 @@ class CabeComplexityAnalyzer:
             
         # Simple formula: lower complexity and fewer functions = better
         return max(0, 100 - (complexity * 2) - (func_count * 0.5))
+
+class DummyCabeWrapper:
+    """Fallback if Cabe is not available."""
+
+    def analyze(self, code: str) -> Dict[str, Any]:
+        logger.warning("Cabe not available - using dummy analysis")
+        return {
+            "cyclomatic_complexity": 0,
+            "function_count": 0,
+            "class_count": 0,
+            "maintainability_index": 0,
+            "status": "unavailable"
+        }
