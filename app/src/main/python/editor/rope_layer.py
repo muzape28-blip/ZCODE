@@ -1,5 +1,5 @@
 """
-Rope Refactoring Layer
+Rope Refactoring Layer with Lazy Loading and Error Handling
 
 Provides code refactoring capabilities using Rope library.
 """
@@ -11,35 +11,18 @@ from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
-class RopeRefactorer:
+class RopeWrapper:
     """Wrapper around Rope library for code refactoring."""
 
-    def __init__(self):
-        try:
-            import rope.base.project
-            import rope.base.libutils
-            import rope.refactor.rename
-            import rope.refactor.extract
-            import rope.refactor.inline
-            import rope.refactor.move
-            import rope.refactor.method_object
-            
-            self.rope = rope
-            self.available = True
-            logger.info("Rope initialized successfully")
-        except ImportError:
-            self.available = False
-            logger.warning("Rope not available - refactoring will be limited")
+    def __init__(self, rope):
+        self._rope = rope
 
     def refactor(self, code: str, operation: str, **kwargs) -> str:
         """Perform code refactoring operation."""
-        if not self.available:
-            return code
-
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
                 # Create a temporary project
-                project = self.rope.base.project.Project(tmpdir)
+                project = self._rope.base.project.Project(tmpdir)
                 
                 # Create a temporary file with the code
                 file_path = os.path.join(tmpdir, "temp.py")
@@ -74,16 +57,21 @@ class RopeRefactorer:
         if not old_name or not new_name:
             return module.get_code()
         
-        # Get the offset for the line
-        changes = self.rope.refactor.rename.Rename(
-            project, module, offset=module.get_offset(line, 0), newname=new_name
-        ).get_changes()
-        
-        # Apply changes
-        for change in changes:
-            change.do()
-        
-        return module.get_code()
+        try:
+            # Get the offset for the line
+            offset = module.get_offset(line, 0)
+            changes = self._rope.refactor.rename.Rename(
+                project, module, offset=offset, newname=new_name
+            ).get_changes()
+            
+            # Apply changes
+            for change in changes:
+                change.do()
+            
+            return module.get_code()
+        except Exception as e:
+            logger.error(f"Rope rename failed: {e}")
+            return module.get_code()
 
     def _extract_method(self, project, module, **kwargs) -> str:
         """Extract code to a new method."""
@@ -92,7 +80,7 @@ class RopeRefactorer:
         method_name = kwargs.get('method_name', 'extracted_method')
         
         try:
-            changes = self.rope.refactor.extract.ExtractMethod(
+            changes = self._rope.refactor.extract.ExtractMethod(
                 project, module,
                 start_offset=module.get_offset(start_line, 0),
                 end_offset=module.get_offset(end_line, 0),
@@ -104,7 +92,7 @@ class RopeRefactorer:
             
             return module.get_code()
         except Exception as e:
-            logger.error(f"Extract method failed: {e}")
+            logger.error(f"Rope extract method failed: {e}")
             return module.get_code()
 
     def _extract_variable(self, project, module, **kwargs) -> str:
@@ -114,9 +102,7 @@ class RopeRefactorer:
         var_name = kwargs.get('var_name', 'extracted_var')
         
         try:
-            # This is a simplified version - actual implementation would need
-            # to find the exact expression in the code
-            changes = self.rope.refactor.extract.ExtractVariable(
+            changes = self._rope.refactor.extract.ExtractVariable(
                 project, module,
                 offset=module.get_offset(line, 0),
                 expression=expression,
@@ -128,7 +114,7 @@ class RopeRefactorer:
             
             return module.get_code()
         except Exception as e:
-            logger.error(f"Extract variable failed: {e}")
+            logger.error(f"Rope extract variable failed: {e}")
             return module.get_code()
 
     def _inline(self, project, module, **kwargs) -> str:
@@ -136,7 +122,7 @@ class RopeRefactorer:
         line = kwargs.get('line', 1)
         
         try:
-            changes = self.rope.refactor.inline.Inline(
+            changes = self._rope.refactor.inline.Inline(
                 project, module, offset=module.get_offset(line, 0)
             ).get_changes()
             
@@ -145,5 +131,12 @@ class RopeRefactorer:
             
             return module.get_code()
         except Exception as e:
-            logger.error(f"Inline failed: {e}")
+            logger.error(f"Rope inline failed: {e}")
             return module.get_code()
+
+class DummyRopeWrapper:
+    """Fallback if Rope is not available."""
+
+    def refactor(self, code: str, operation: str, **kwargs) -> str:
+        logger.warning("Rope not available - using dummy refactoring")
+        return code
