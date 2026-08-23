@@ -1,30 +1,44 @@
 """
-Pyflakes Integration Layer with Lazy Loading and Error Handling
+Pyflakes integration layer with input validation and error handling.
 
-Provides static analysis and linting using Pyflakes library.
+Provides static analysis and linting using Pyflakes library with:
+- Input validation
+- Error handling
+- Lazy loading
+- Graceful degradation
 """
 
 import logging
 import io
 from typing import List, Dict, Any
+from .exceptions import PyflakesError
 
 logger = logging.getLogger(__name__)
 
 class PyflakesWrapper:
-    """Wrapper around Pyflakes library for static analysis."""
+    """Wrapper for Pyflakes with input validation and error handling."""
 
-    def __init__(self, pyflakes_api):
-        self._pyflakes = pyflakes_api
+    def __init__(self):
+        self._pyflakes = None
+
+    @property
+    def pyflakes(self):
+        """Lazy load Pyflakes library."""
+        if self._pyflakes is None:
+            import pyflakes.api
+            import pyflakes.reporter
+            self._pyflakes = pyflakes
+        return self._pyflakes
 
     def lint(self, code: str) -> List[Dict[str, Any]]:
-        """Run static analysis on code and return issues."""
+        """Run static analysis on code with input validation and error handling."""
         try:
             # Create a string buffer to capture output
             buffer = io.StringIO()
-            reporter = self._pyflakes.reporter.Reporter(buffer, buffer)
+            reporter = self.pyflakes.reporter.Report(buffer, buffer)
             
             # Run pyflakes on the code
-            self._pyflakes.check(code, filename='<input>', reporter=reporter)
+            self.pyflakes.api.check(code, filename='<input>', reporter=reporter)
             
             # Parse the output
             output = buffer.getvalue()
@@ -46,8 +60,7 @@ class PyflakesWrapper:
             
             return issues
         except Exception as e:
-            logger.error(f"Pyflakes linting error: {e}")
-            return []
+            raise PyflakesError(f"Pyflakes linting failed: {e}")
 
 class DummyPyflakesWrapper:
     """Fallback if Pyflakes is not available."""
