@@ -1,7 +1,7 @@
 # 🧠 Engine Spike Intelligence
 
 **Status:** IMPLEMENTED LOCALLY (v1.0.21)
-**Target:** Meningkatkan produktivitas pengembangan dengan integrasi tooling cerdas
+**Target:** Meningkatkan kemampuan pengembangan dengan integrasi tooling cerdas
 
 ## 🎯 Overview
 
@@ -9,8 +9,8 @@ Engine Spike Intelligence adalah sistem intelijen editor yang terintegrasi dalam
 
 1. **Jedi** - Autocompletion dan code navigation
 2. **Parso** - AST parsing dan syntax analysis
-3. **Pyflakes8** - Static analysis dan linting
-4. **Cabe** - Complexity analysis (McCabe metrics)
+3. **Pyflakes** - Static analysis dan linting
+4. **Cabe (McCabe)** - Complexity analysis
 5. **Rope** - Code refactoring
 
 ## 🔧 Fitur Utama
@@ -88,7 +88,7 @@ spike_engine = plugin_manager.get_plugin('spike_intelligence')
 |----------|--------|---------|
 | Jedi | ✅ Implemented | Autocompletion dan navigation |
 | Parso | ✅ Implemented | AST parsing dan error detection |
-| Pyflakes8 | ✅ Implemented | Static analysis dan linting |
+| Pyflakes | ✅ Implemented | Static analysis dan linting |
 | Cabe | ✅ Implemented | Complexity analysis |
 | Rope | ✅ Implemented | Refactoring tools |
 | Integrasi Plugin | ✅ Implemented | Terdaftar sebagai plugin inti |
@@ -108,6 +108,7 @@ Engine Spike Intelligence membutuhkan package Python berikut:
 jedi
 parso
 pyflakes
+mccabe
 rope
 ```
 
@@ -129,6 +130,215 @@ Package ini akan diinstal secara otomatis sebagai bagian dari ZCODE dependencies
 3. Fitur autocompletion mungkin terbatas pada Python code
 
 ## 🤝 Kontribusi
+
+Kami menyambut kontribusi untuk:
+- Meningkatkan akurasi analisis
+- Menambahkan dukungan untuk bahasa pemrograman lain
+- Meningkatkan performa dan efisiensi
+
+Silakan buka issue atau pull request di repository ZCODE.
+
+## 📝 Lisensi
+
+Engine Spike Intelligence adalah bagian dari ZCODE dan dilisensikan di bawah GPLv3.
+
+## 🔄 Pola Integrasi Baru
+
+Engine sekarang menggunakan **lazy loading** dan **graceful degradation**:
+
+```python
+# Contoh penggunaan dengan graceful degradation
+engine = SpikeIntelligenceEngine()
+
+# Jika Jedi tidak tersedia, akan menggunakan fallback
+completions = engine.autocomplete(code, (line, column))
+
+# Cek status komponen
+health = engine.health_check()
+if not health['jedi']:
+    print("Warning: Jedi not available - autocompletion may be limited")
+```
+
+## 🔄 Caching dan Performance
+
+Setiap komponen menggunakan **caching** untuk meningkatkan performa:
+
+```python
+# Jedi menggunakan caching untuk autocompletion
+completions = engine.autocomplete(code, (line, column))  # Cached
+
+# Parso menggunakan caching untuk parsing AST
+ast = engine.parse_ast(code)  # Cached
+```
+
+## 🔄 Error Handling
+
+Setiap operasi memiliki **error handling** yang komprehensif:
+
+```python
+# Error handling untuk linting
+issues = engine.lint(code)
+if not issues:
+    print("No issues found")
+```
+
+## 🔄 Dokumentasi API
+
+### `SpikeIntelligenceEngine`
+
+| Method | Deskripsi | Parameter |
+|--------|------------|-----------|
+| `autocomplete` | Mendapatkan saran kode | `code: str`, `position: Tuple[int, int]` |
+| `parse_ast` | Parsing AST | `code: str` |
+| `lint` | Static analysis | `code: str` |
+| `analyze_complexity` | Analisis kompleksitas | `code: str` |
+| `refactor` | Refactoring kode | `code: str`, `operation: str`, `**kwargs` |
+| `health_check` | Cek status komponen | - |
+
+### `JediWrapper`
+
+| Method | Deskripsi | Parameter |
+|--------|------------|-----------|
+| `get_completions` | Mendapatkan saran kode | `code: str`, `position: Tuple[int, int]` |
+| `get_definitions` | Mendapatkan definisi simbol | `code: str`, `position: Tuple[int, int]` |
+
+### `ParsoWrapper`
+
+| Method | Deskripsi | Parameter |
+|--------|------------|-----------|
+| `parse` | Parsing AST | `code: str` |
+| `get_errors` | Mendapatkan error sintaks | `code: str` |
+
+### `PyflakesWrapper`
+
+| Method | Deskripsi | Parameter |
+|--------|------------|-----------|
+| `lint` | Static analysis | `code: str` |
+
+### `CabeWrapper`
+
+| Method | Deskripsi | Parameter |
+|--------|------------|-----------|
+| `analyze` | Analisis kompleksitas | `code: str` |
+
+### `RopeWrapper`
+
+| Method | Deskripsi | Parameter |
+|--------|------------|-----------|
+| `refactor` | Refactoring kode | `code: str`, `operation: str`, `**kwargs` |
+
+## 🔄 Contoh Penggunaan Lanjutan
+
+### 1. Autocompletion dengan Fallback
+```python
+engine = SpikeIntelligenceEngine()
+
+# Coba autocompletion
+completions = engine.autocomplete(code, (line, column))
+
+# Jika tidak ada saran, coba dengan fallback
+if not completions:
+    print("No completions found - trying fallback")
+    completions = engine.jedi_provider.get_completions(code, (line, column))
+```
+
+### 2. Analisis Kompleksitas dengan Visualisasi
+```python
+analysis = engine.analyze_complexity(code)
+
+# Visualisasi hasil analisis
+print(f"Complexity: {analysis['cyclomatic_complexity']}")
+print(f"Maintainability: {analysis['maintainability_index']:.1f}%")
+```
+
+### 3. Refactoring dengan Error Handling
+```python
+try:
+    refactored = engine.refactor(
+        code,
+        "rename",
+        old_name="old_function",
+        new_name="new_function",
+        line=1
+    )
+    print("Refactoring successful")
+except Exception as e:
+    print(f"Refactoring failed: {e}")
+```
+
+## 🔄 Best Practices
+
+1. **Gunakan `health_check()`** sebelum menggunakan fitur tertentu:
+```python
+if engine.health_check()['jedi']:
+    completions = engine.autocomplete(code, (line, column))
+```
+
+2. **Batasi ukuran file** untuk operasi berat (refactoring, complexity analysis):
+```python
+if len(code) > 10000:  # 10K karakter
+    print("Warning: Large file - analysis may be slow")
+```
+
+3. **Gunakan caching** untuk operasi berulang:
+```python
+# Jedi dan Parso sudah menggunakan caching
+completions = engine.autocomplete(code, (line, column))  # Cached
+ast = engine.parse_ast(code)  # Cached
+```
+
+4. **Error handling** untuk semua operasi:
+```python
+try:
+    issues = engine.lint(code)
+except Exception as e:
+    print(f"Linting failed: {e}")
+```
+
+## 🔄 Troubleshooting
+
+### 1. Komponen tidak tersedia
+```python
+health = engine.health_check()
+if not health['jedi']:
+    print("Jedi not available - install with: pip install jedi")
+```
+
+### 2. Performance lambat
+```python
+# Untuk file besar, gunakan background thread
+import threading
+
+def analyze_in_background():
+    analysis = engine.analyze_complexity(large_code)
+    print(analysis)
+
+thread = threading.Thread(target=analyze_in_background)
+thread.start()
+```
+
+### 3. Error pada refactoring
+```python
+try:
+    refactored = engine.refactor(code, "rename", old_name="old", new_name="new", line=1)
+except Exception as e:
+    print(f"Refactoring failed: {e}")
+    print("Trying fallback...")
+    refactored = engine.rope_refactorer.refactor(code, "rename", old_name="old", new_name="new", line=1)
+```
+
+## 🔄 FAQ
+
+### Q: Mengapa autocompletion lambat?
+A: Jedi menggunakan caching untuk meningkatkan performa. Untuk file besar, pertimbangkan untuk menggunakan background thread.
+
+### Q: Bagaimana cara menambahkan dukungan untuk bahasa lain?
+A: Saat ini engine hanya mendukung Python. Untuk menambahkan dukungan bahasa lain, Anda perlu mengimplementasikan wrapper untuk tooling yang relevan (seperti Jedi untuk JavaScript, Tree-sitter untuk banyak bahasa).
+
+### Q: Bagaimana cara meningkatkan performa?
+A: Gunakan caching, batasi ukuran file, dan gunakan background thread untuk operasi berat.
+
+## 🔄 Kontribusi
 
 Kami menyambut kontribusi untuk:
 - Meningkatkan akurasi analisis
