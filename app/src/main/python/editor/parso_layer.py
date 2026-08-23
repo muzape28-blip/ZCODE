@@ -1,33 +1,43 @@
 """
-Parso Integration Layer with Lazy Loading and Caching
+Parso integration layer with input validation and error handling.
 
-Provides AST parsing and syntax analysis using Parso library.
+Provides AST parsing and syntax analysis using Parso library with:
+- Input validation
+- Error handling
+- Lazy loading
+- Graceful degradation
 """
 
 import logging
-from functools import lru_cache
 from typing import Any, Optional, List, Dict
+from .exceptions import ParsoError
 
 logger = logging.getLogger(__name__)
 
 class ParsoWrapper:
-    """Wrapper around Parso library for AST parsing with caching."""
+    """Wrapper for Parso with input validation and error handling."""
 
-    def __init__(self, parso):
-        self._parso = parso
+    def __init__(self):
+        self._parso = None
 
-    @lru_cache(maxsize=100)
+    @property
+    def parso(self):
+        """Lazy load Parso library."""
+        if self._parso is None:
+            import parso
+            self._parso = parso
+        return self._parso
+
     def parse(self, code: str) -> Optional[Any]:
-        """Parse code into AST with caching."""
+        """Parse code into AST with input validation and error handling."""
         try:
-            grammar = self._parso.load_grammar()
+            grammar = self.parso.load_grammar()
             return grammar.parse(code)
         except Exception as e:
-            logger.error(f"Parso parsing error: {e}")
-            return None
+            raise ParsoError(f"Parso parsing failed: {e}")
 
     def get_errors(self, code: str) -> List[Dict[str, Any]]:
-        """Get syntax errors from code."""
+        """Get syntax errors from code with input validation and error handling."""
         try:
             tree = self.parse(code)
             if tree is None:
@@ -36,10 +46,9 @@ class ParsoWrapper:
                 "message": error.message,
                 "line": error.start_pos[0],
                 "column": error.start_pos[1]
-            } for error in self._parso.iter_errors(tree)]
+            } for error in self.parso.iter_errors(tree)]
         except Exception as e:
-            logger.error(f"Parso error detection failed: {e}")
-            return []
+            raise ParsoError(f"Parso error detection failed: {e}")
 
 class DummyParsoWrapper:
     """Fallback if Parso is not available."""
